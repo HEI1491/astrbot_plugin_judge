@@ -3,4 +3,4 @@ display_name: 智能路由判断
 desc: 根据用户消息复杂度智能选择高智商模型或快速模型进行回答,优化响应速度和质量
 version: 1.0.0
 author: AstrBot
-repo: https://github.com/AstrBotDevs/astrbot_plugin_judge
+repo: local
