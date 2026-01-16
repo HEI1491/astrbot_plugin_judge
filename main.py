@@ -3,42 +3,41 @@ AstrBot 智能路由判断插件
 根据用户消息复杂度,智能选择高智商模型或快速模型进行回答
 """
 
+import re
 import random
+from string import Template
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger, AstrBotConfig
 
 
-@register(
-    "astrbot_plugin_judge",
-    "AstrBot",
-    "智能路由判断插件 - 根据消息复杂度自动选择高智商或快速模型",
-    "1.0.0",
-    "https://github.com/AstrBotDevs/astrbot_plugin_judge"
-)
 class JudgePlugin(Star):
-    """智能路由判断插件"""
+    """智能路由判断插件
+    
+    AstrBot v3.5.20+ 推荐直接通过继承 Star 类来自动发现插件,
+    无需使用 @register 装饰器。
+    """
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
         
-        # 判断提示词模板
-        self.judge_prompt = """你是一个消息复杂度判断助手。请分析以下用户消息,判断它需要使用哪种模型来回答。
+        # 判断提示词模板 - 使用 string.Template 避免花括号注入问题
+        self.judge_prompt_template = Template("""你是一个消息复杂度判断助手。请分析以下用户消息,判断它需要使用哪种模型来回答。
 
 判断标准:
 - 【高智商模型】适用于:复杂推理、数学计算、代码编写、专业知识问答、长文本分析、创意写作、多步骤任务
 - 【快速模型】适用于:简单问候、闲聊、简单查询、是非问题、简短回复、日常对话
 
 用户消息:
-{message}
+$message
 
 请只回复一个词:HIGH 或 FAST
 - HIGH 表示需要高智商模型
-- FAST 表示使用快速模型即可"""
+- FAST 表示使用快速模型即可""")
 
-    def _get_provider_model_pair(self, provider_ids: list, model_names: list) -> tuple:
+    def _get_provider_model_pair(self, provider_ids, model_names) -> tuple:
         """从提供商列表和模型列表中随机选择一对
         
         Args:
@@ -48,6 +47,11 @@ class JudgePlugin(Star):
         Returns:
             (provider_id, model_name) 元组,如果列表为空则返回 ("", "")
         """
+        # 类型检查,确保是列表
+        if not isinstance(provider_ids, list):
+            logger.warning(f"[JudgePlugin] provider_ids 应为列表类型,实际为: {type(provider_ids)}")
+            return ("", "")
+        
         if not provider_ids:
             return ("", "")
         
@@ -57,7 +61,7 @@ class JudgePlugin(Star):
         
         # 获取对应的模型名称(如果有)
         model_name = ""
-        if model_names and len(model_names) > index:
+        if isinstance(model_names, list) and len(model_names) > index:
             model_name = model_names[index]
         
         return (provider_id, model_name)
@@ -81,6 +85,28 @@ class JudgePlugin(Star):
         provider_ids = self.config.get("fast_provider_ids", [])
         model_names = self.config.get("fast_models", [])
         return self._get_provider_model_pair(provider_ids, model_names)
+
+    def _extract_command_args(self, message: str, command_patterns: list) -> str:
+        """从消息中提取命令参数,支持动态命令前缀
+        
+        Args:
+            message: 原始消息
+            command_patterns: 命令模式列表,如 ["ask_high", "高智商", "deep", "大"]
+            
+        Returns:
+            去除命令后的参数部分
+        """
+        # 构建正则表达式,匹配任意前缀(包括 /, ., !, 无前缀等)
+        # 模式: ^[可选前缀符号][命令名称]\s*(.*)$
+        for pattern in command_patterns:
+            # 匹配可能的前缀符号: / . ! # 或无前缀
+            regex = rf'^[/\.!#]?{re.escape(pattern)}\s*(.*)$'
+            match = re.match(regex, message, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        
+        # 如果没有匹配到任何命令模式,返回原消息
+        return message.strip()
 
     async def initialize(self):
         """插件初始化"""
@@ -175,10 +201,12 @@ class JudgePlugin(Star):
         
         # 获取自定义提示词(如果有)
         custom_prompt = self.config.get("custom_judge_prompt", "")
-        if custom_prompt and "{message}" in custom_prompt:
-            prompt = custom_prompt.format(message=message)
+        if custom_prompt and "$message" in custom_prompt:
+            # 使用 string.Template 安全替换,避免花括号注入
+            prompt = Template(custom_prompt).safe_substitute(message=message)
         else:
-            prompt = self.judge_prompt.format(message=message)
+            # 使用默认模板
+            prompt = self.judge_prompt_template.safe_substitute(message=message)
         
         # 调用判断模型
         judge_model = self.config.get("judge_model", "")
@@ -299,6 +327,57 @@ class JudgePlugin(Star):
         
         return True
 
+    async def _call_model_with_question(self, event: AstrMessageEvent, question: str, 
+                                         provider_id: str, model_name: str, 
+                                         model_type: str, system_prompt: str):
+        """统一的模型调用方法,减少代码重复
+        
+        Args:
+            event: 消息事件
+            question: 用户问题
+            provider_id: 提供商ID
+            model_name: 模型名称
+            model_type: 模型类型描述(如 "🧠 高智商模型")
+            system_prompt: 系统提示词
+            
+        Yields:
+            响应结果
+        """
+        if not provider_id:
+            yield event.plain_result(f"❌ {model_type}未配置,请先在插件设置中配置相应的提供商列表")
+            return
+        
+        # 获取提供商
+        provider = self.context.get_provider_by_id(provider_id)
+        if not provider:
+            yield event.plain_result(f"❌ 找不到模型提供商: {provider_id}")
+            return
+        
+        try:
+            logger.info(f"[JudgePlugin] 使用 {model_type} (提供商: {provider_id}, 模型: {model_name or '默认'}) 回答问题")
+            
+            # 调用模型
+            response = await provider.text_chat(
+                prompt=question,
+                context=[],
+                system_prompt=system_prompt,
+                model=model_name if model_name else None
+            )
+            
+            answer = response.completion_text
+            
+            yield event.plain_result(f"""{model_type} 回答
+━━━━━━━━━━━━━━━━━━━━
+📝 问题: {question[:50]}{"..." if len(question) > 50 else ""}
+🤖 提供商: {provider_id}
+📋 模型: {model_name or '默认'}
+━━━━━━━━━━━━━━━━━━━━
+{answer}""")
+            
+        except Exception as e:
+            logger.error(f"[JudgePlugin] {model_type}调用失败: {e}")
+            yield event.plain_result(f"❌ 调用失败: {e}")
+
     @filter.command("judge_status")
     async def judge_status(self, event: AstrMessageEvent):
         """查看智能路由插件状态"""
@@ -337,10 +416,8 @@ class JudgePlugin(Star):
     @filter.command("judge_test")
     async def judge_test(self, event: AstrMessageEvent):
         """测试消息复杂度判断"""
-        # 获取测试消息(去掉命令部分)
-        test_message = event.message_str
-        if test_message.startswith("/judge_test"):
-            test_message = test_message[len("/judge_test"):].strip()
+        # 使用辅助方法提取参数,支持动态前缀
+        test_message = self._extract_command_args(event.message_str, ["judge_test"])
         
         if not test_message:
             yield event.plain_result("请提供测试消息,例如: /judge_test 帮我写一个Python排序算法")
@@ -366,13 +443,11 @@ class JudgePlugin(Star):
         用法: /ask_high 你的问题
         别名: /高智商, /deep, /大
         """
-        # 获取问题内容(去掉命令部分)
-        question = event.message_str
-        # 移除可能的命令前缀
-        for prefix in ["/ask_high", "/高智商", "/deep", "/大"]:
-            if question.startswith(prefix):
-                question = question[len(prefix):].strip()
-                break
+        # 使用辅助方法提取参数,支持动态前缀
+        question = self._extract_command_args(
+            event.message_str, 
+            ["ask_high", "高智商", "deep", "大"]
+        )
         
         if not question:
             yield event.plain_result("请提供问题,例如: /大 帮我分析一下这段代码的时间复杂度")
@@ -381,40 +456,13 @@ class JudgePlugin(Star):
         # 获取高智商模型配置(从列表中随机选择)
         provider_id, model_name = self._get_high_iq_provider_model()
         
-        if not provider_id:
-            yield event.plain_result("❌ 高智商模型未配置,请先在插件设置中配置 high_iq_provider_ids 列表")
-            return
-        
-        # 获取提供商
-        provider = self.context.get_provider_by_id(provider_id)
-        if not provider:
-            yield event.plain_result(f"❌ 找不到模型提供商: {provider_id}")
-            return
-        
-        try:
-            logger.info(f"[JudgePlugin] 使用高智商提供商 {provider_id}, 模型 {model_name or '默认'} 回答问题")
-            
-            # 调用高智商模型
-            response = await provider.text_chat(
-                prompt=question,
-                context=[],
-                system_prompt="你是一个智能助手,请认真、详细地回答用户的问题。",
-                model=model_name if model_name else None
-            )
-            
-            answer = response.completion_text
-            
-            yield event.plain_result(f"""🧠 高智商模型回答
-━━━━━━━━━━━━━━━━━━━━
-📝 问题: {question[:50]}{"..." if len(question) > 50 else ""}
-🤖 提供商: {provider_id}
-📋 模型: {model_name or '默认'}
-━━━━━━━━━━━━━━━━━━━━
-{answer}""")
-            
-        except Exception as e:
-            logger.error(f"[JudgePlugin] 高智商模型调用失败: {e}")
-            yield event.plain_result(f"❌ 调用失败: {e}")
+        # 使用统一的调用方法
+        async for result in self._call_model_with_question(
+            event, question, provider_id, model_name,
+            "🧠 高智商模型",
+            "你是一个智能助手,请认真、详细地回答用户的问题。"
+        ):
+            yield result
 
     @filter.command("ask_fast", alias={"快速", "quick", "小"})
     async def ask_fast(self, event: AstrMessageEvent):
@@ -423,13 +471,11 @@ class JudgePlugin(Star):
         用法: /ask_fast 你的问题
         别名: /快速, /quick, /小
         """
-        # 获取问题内容(去掉命令部分)
-        question = event.message_str
-        # 移除可能的命令前缀
-        for prefix in ["/ask_fast", "/快速", "/quick", "/小"]:
-            if question.startswith(prefix):
-                question = question[len(prefix):].strip()
-                break
+        # 使用辅助方法提取参数,支持动态前缀
+        question = self._extract_command_args(
+            event.message_str, 
+            ["ask_fast", "快速", "quick", "小"]
+        )
         
         if not question:
             yield event.plain_result("请提供问题,例如: /小 今天天气怎么样")
@@ -438,40 +484,13 @@ class JudgePlugin(Star):
         # 获取快速模型配置(从列表中随机选择)
         provider_id, model_name = self._get_fast_provider_model()
         
-        if not provider_id:
-            yield event.plain_result("❌ 快速模型未配置,请先在插件设置中配置 fast_provider_ids 列表")
-            return
-        
-        # 获取提供商
-        provider = self.context.get_provider_by_id(provider_id)
-        if not provider:
-            yield event.plain_result(f"❌ 找不到模型提供商: {provider_id}")
-            return
-        
-        try:
-            logger.info(f"[JudgePlugin] 使用快速提供商 {provider_id}, 模型 {model_name or '默认'} 回答问题")
-            
-            # 调用快速模型
-            response = await provider.text_chat(
-                prompt=question,
-                context=[],
-                system_prompt="你是一个智能助手,请简洁地回答用户的问题。",
-                model=model_name if model_name else None
-            )
-            
-            answer = response.completion_text
-            
-            yield event.plain_result(f"""⚡ 快速模型回答
-━━━━━━━━━━━━━━━━━━━━
-📝 问题: {question[:50]}{"..." if len(question) > 50 else ""}
-🤖 提供商: {provider_id}
-📋 模型: {model_name or '默认'}
-━━━━━━━━━━━━━━━━━━━━
-{answer}""")
-            
-        except Exception as e:
-            logger.error(f"[JudgePlugin] 快速模型调用失败: {e}")
-            yield event.plain_result(f"❌ 调用失败: {e}")
+        # 使用统一的调用方法
+        async for result in self._call_model_with_question(
+            event, question, provider_id, model_name,
+            "⚡ 快速模型",
+            "你是一个智能助手,请简洁地回答用户的问题。"
+        ):
+            yield result
 
     @filter.command("ask_smart", alias={"智能问答", "smart", "问"})
     async def ask_smart(self, event: AstrMessageEvent):
@@ -480,13 +499,11 @@ class JudgePlugin(Star):
         用法: /ask_smart 你的问题
         别名: /智能问答, /smart, /问
         """
-        # 获取问题内容(去掉命令部分)
-        question = event.message_str
-        # 移除可能的命令前缀
-        for prefix in ["/ask_smart", "/智能问答", "/smart", "/问"]:
-            if question.startswith(prefix):
-                question = question[len(prefix):].strip()
-                break
+        # 使用辅助方法提取参数,支持动态前缀
+        question = self._extract_command_args(
+            event.message_str, 
+            ["ask_smart", "智能问答", "smart", "问"]
+        )
         
         if not question:
             yield event.plain_result("请提供问题,例如: /问 帮我解释一下量子计算")
