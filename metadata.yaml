@@ -1,6 +1,6 @@
 name: astrbot_plugin_judge
 display_name: 智能路由判断
-desc: 根据用户消息复杂度智能选择高智商模型或快速模型进行回答,优化响应速度和质量
+desc: AstrBot 智能路由判断插件 🧠 根据用户消息复杂度,智能选择高智商模型或快速模型进行回答 功能特性 智能判断:通过LLM分析用户消息的复杂度 自动路由:根据判断结果自动切换到合适的模型提供商 备用规则:当判断模型不可用时,使用内置规则进行判断 灵活配置:支持配置多个高智商/快速模型提供商,每个提供商可指定模型 随机选择:从提供商列表中随机选择,实现负载均衡 白名单/黑名单:支持按会话、群组、用户进行过滤
 version: 1.0.0
-author: AstrBot
-repo: local
+author: HEI
+repo: https://github.com/HEI1491/astrbot_plugin_judge
