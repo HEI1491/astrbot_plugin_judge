@@ -1,6 +1,6 @@
 """
 AstrBot 智能路由判断插件
-根据用户消息复杂度，智能选择高智商模型或快速模型进行回答
+根据用户消息复杂度,智能选择高智商模型或快速模型进行回答
 """
 
 import random
@@ -25,41 +25,62 @@ class JudgePlugin(Star):
         self.config = config
         
         # 判断提示词模板
-        self.judge_prompt = """你是一个消息复杂度判断助手。请分析以下用户消息，判断它需要使用哪种模型来回答。
+        self.judge_prompt = """你是一个消息复杂度判断助手。请分析以下用户消息,判断它需要使用哪种模型来回答。
 
-判断标准：
-- 【高智商模型】适用于：复杂推理、数学计算、代码编写、专业知识问答、长文本分析、创意写作、多步骤任务
-- 【快速模型】适用于：简单问候、闲聊、简单查询、是非问题、简短回复、日常对话
+判断标准:
+- 【高智商模型】适用于:复杂推理、数学计算、代码编写、专业知识问答、长文本分析、创意写作、多步骤任务
+- 【快速模型】适用于:简单问候、闲聊、简单查询、是非问题、简短回复、日常对话
 
-用户消息：
+用户消息:
 {message}
 
-请只回复一个词：HIGH 或 FAST
+请只回复一个词:HIGH 或 FAST
 - HIGH 表示需要高智商模型
 - FAST 表示使用快速模型即可"""
 
-    def _get_random_model(self, model_list: list) -> str:
-        """从模型列表中随机选择一个模型
+    def _get_provider_model_pair(self, provider_ids: list, model_names: list) -> tuple:
+        """从提供商列表和模型列表中随机选择一对
         
         Args:
-            model_list: 模型列表
+            provider_ids: 提供商ID列表
+            model_names: 模型名称列表(与提供商一一对应)
             
         Returns:
-            随机选择的模型名称，如果列表为空则返回空字符串
+            (provider_id, model_name) 元组,如果列表为空则返回 ("", "")
         """
-        if not model_list:
-            return ""
-        return random.choice(model_list)
+        if not provider_ids:
+            return ("", "")
+        
+        # 随机选择一个索引
+        index = random.randint(0, len(provider_ids) - 1)
+        provider_id = provider_ids[index]
+        
+        # 获取对应的模型名称(如果有)
+        model_name = ""
+        if model_names and len(model_names) > index:
+            model_name = model_names[index]
+        
+        return (provider_id, model_name)
     
-    def _get_high_iq_model(self) -> str:
-        """获取高智商模型（从列表中随机选择）"""
-        models = self.config.get("high_iq_models", [])
-        return self._get_random_model(models)
+    def _get_high_iq_provider_model(self) -> tuple:
+        """获取高智商模型提供商和模型名称
+        
+        Returns:
+            (provider_id, model_name) 元组
+        """
+        provider_ids = self.config.get("high_iq_provider_ids", [])
+        model_names = self.config.get("high_iq_models", [])
+        return self._get_provider_model_pair(provider_ids, model_names)
     
-    def _get_fast_model(self) -> str:
-        """获取快速模型（从列表中随机选择）"""
-        models = self.config.get("fast_models", [])
-        return self._get_random_model(models)
+    def _get_fast_provider_model(self) -> tuple:
+        """获取快速模型提供商和模型名称
+        
+        Returns:
+            (provider_id, model_name) 元组
+        """
+        provider_ids = self.config.get("fast_provider_ids", [])
+        model_names = self.config.get("fast_models", [])
+        return self._get_provider_model_pair(provider_ids, model_names)
 
     async def initialize(self):
         """插件初始化"""
@@ -67,26 +88,26 @@ class JudgePlugin(Star):
         
         # 验证配置
         judge_provider = self.config.get("judge_provider_id", "")
-        high_iq_models = self.config.get("high_iq_models", [])
-        fast_models = self.config.get("fast_models", [])
+        high_iq_provider_ids = self.config.get("high_iq_provider_ids", [])
+        fast_provider_ids = self.config.get("fast_provider_ids", [])
         
         if not judge_provider:
-            logger.error("[JudgePlugin] 【必填】未配置判断模型提供商ID，插件无法正常工作！")
-        if not high_iq_models:
-            logger.warning("[JudgePlugin] 未配置高智商模型列表")
+            logger.error("[JudgePlugin] 【必填】未配置判断模型提供商ID,插件无法正常工作!")
+        if not high_iq_provider_ids:
+            logger.warning("[JudgePlugin] 未配置高智商模型提供商列表")
         else:
-            logger.info(f"[JudgePlugin] 高智商模型列表: {high_iq_models}")
-        if not fast_models:
-            logger.warning("[JudgePlugin] 未配置快速模型列表")
+            logger.info(f"[JudgePlugin] 高智商模型提供商列表: {high_iq_provider_ids}")
+        if not fast_provider_ids:
+            logger.warning("[JudgePlugin] 未配置快速模型提供商列表")
         else:
-            logger.info(f"[JudgePlugin] 快速模型列表: {fast_models}")
+            logger.info(f"[JudgePlugin] 快速模型提供商列表: {fast_provider_ids}")
             
         logger.info("[JudgePlugin] 初始化完成")
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         """
-        拦截LLM请求，根据消息复杂度选择合适的模型
+        拦截LLM请求,根据消息复杂度选择合适的模型
         """
         # 检查是否启用插件
         if not self.config.get("enable", True):
@@ -108,21 +129,27 @@ class JudgePlugin(Star):
             decision = await self._judge_message_complexity(user_message)
             
             if decision == "HIGH":
-                # 使用高智商模型（从列表中随机选择）
-                high_iq_model = self._get_high_iq_model()
-                if high_iq_model:
-                    req.model = high_iq_model
-                    logger.info(f"[JudgePlugin] 消息判定为复杂，使用高智商模型: {high_iq_model}")
+                # 使用高智商模型(从列表中随机选择)
+                provider_id, model_name = self._get_high_iq_provider_model()
+                if provider_id:
+                    # 修改请求的提供商和模型
+                    req.provider_id = provider_id
+                    if model_name:
+                        req.model = model_name
+                    logger.info(f"[JudgePlugin] 消息判定为复杂,使用高智商提供商: {provider_id}, 模型: {model_name or '默认'}")
             else:
-                # 使用快速模型（从列表中随机选择）
-                fast_model = self._get_fast_model()
-                if fast_model:
-                    req.model = fast_model
-                    logger.info(f"[JudgePlugin] 消息判定为简单，使用快速模型: {fast_model}")
+                # 使用快速模型(从列表中随机选择)
+                provider_id, model_name = self._get_fast_provider_model()
+                if provider_id:
+                    # 修改请求的提供商和模型
+                    req.provider_id = provider_id
+                    if model_name:
+                        req.model = model_name
+                    logger.info(f"[JudgePlugin] 消息判定为简单,使用快速提供商: {provider_id}, 模型: {model_name or '默认'}")
                     
         except Exception as e:
             logger.error(f"[JudgePlugin] 判断过程出错: {e}")
-            # 出错时使用默认模型，不修改请求
+            # 出错时使用默认模型,不修改请求
 
     async def _judge_message_complexity(self, message: str) -> str:
         """
@@ -137,17 +164,21 @@ class JudgePlugin(Star):
         judge_provider_id = self.config.get("judge_provider_id", "")
         
         if not judge_provider_id:
-            # 没有配置判断模型，使用简单规则判断
+            # 没有配置判断模型,使用简单规则判断
             return self._simple_rule_judge(message)
         
         # 获取判断模型提供商
         provider = self.context.get_provider_by_id(judge_provider_id)
         if not provider:
-            logger.warning(f"[JudgePlugin] 找不到判断模型提供商: {judge_provider_id}，使用规则判断")
+            logger.warning(f"[JudgePlugin] 找不到判断模型提供商: {judge_provider_id},使用规则判断")
             return self._simple_rule_judge(message)
         
-        # 构建判断提示词
-        prompt = self.judge_prompt.format(message=message)
+        # 获取自定义提示词(如果有)
+        custom_prompt = self.config.get("custom_judge_prompt", "")
+        if custom_prompt and "{message}" in custom_prompt:
+            prompt = custom_prompt.format(message=message)
+        else:
+            prompt = self.judge_prompt.format(message=message)
         
         # 调用判断模型
         judge_model = self.config.get("judge_model", "")
@@ -156,7 +187,7 @@ class JudgePlugin(Star):
             response = await provider.text_chat(
                 prompt=prompt,
                 context=[],
-                system_prompt="你是一个消息复杂度判断助手，只回复 HIGH 或 FAST。",
+                system_prompt="你是一个消息复杂度判断助手,只回复 HIGH 或 FAST。",
                 model=judge_model if judge_model else None
             )
             
@@ -168,7 +199,7 @@ class JudgePlugin(Star):
             elif "FAST" in result_text:
                 return "FAST"
             else:
-                # 无法解析，使用规则判断
+                # 无法解析,使用规则判断
                 logger.warning(f"[JudgePlugin] 判断模型返回无法解析: {result_text}")
                 return self._simple_rule_judge(message)
                 
@@ -178,7 +209,7 @@ class JudgePlugin(Star):
 
     def _simple_rule_judge(self, message: str) -> str:
         """
-        简单规则判断消息复杂度（备用方案）
+        简单规则判断消息复杂度(备用方案)
         
         Args:
             message: 用户消息
@@ -251,7 +282,7 @@ class JudgePlugin(Star):
         group_id = event.get_group_id() if hasattr(event, 'get_group_id') else ""
         sender_id = event.get_sender_id()
         
-        # 如果有白名单，只处理白名单中的
+        # 如果有白名单,只处理白名单中的
         if whitelist:
             return (
                 session_id in whitelist or
@@ -259,7 +290,7 @@ class JudgePlugin(Star):
                 sender_id in whitelist
             )
         
-        # 如果在黑名单中，不处理
+        # 如果在黑名单中,不处理
         if blacklist:
             if (session_id in blacklist or
                 group_id in blacklist or
@@ -273,32 +304,46 @@ class JudgePlugin(Star):
         """查看智能路由插件状态"""
         enabled = self.config.get("enable", True)
         judge_provider = self.config.get("judge_provider_id", "未配置")
+        high_iq_provider_ids = self.config.get("high_iq_provider_ids", [])
         high_iq_models = self.config.get("high_iq_models", [])
+        fast_provider_ids = self.config.get("fast_provider_ids", [])
         fast_models = self.config.get("fast_models", [])
         
-        high_iq_str = ", ".join(high_iq_models) if high_iq_models else "未配置"
-        fast_str = ", ".join(fast_models) if fast_models else "未配置"
+        # 构建高智商模型信息
+        high_iq_info = []
+        for i, pid in enumerate(high_iq_provider_ids):
+            model = high_iq_models[i] if i < len(high_iq_models) else "默认"
+            high_iq_info.append(f"  • {pid} ({model})")
+        
+        # 构建快速模型信息
+        fast_info = []
+        for i, pid in enumerate(fast_provider_ids):
+            model = fast_models[i] if i < len(fast_models) else "默认"
+            fast_info.append(f"  • {pid} ({model})")
         
         status_msg = f"""📊 智能路由判断插件状态
 ━━━━━━━━━━━━━━━━━━━━
 🔌 插件状态: {"✅ 已启用" if enabled else "❌ 已禁用"}
 🧠 判断模型提供商: {judge_provider}
-🎯 高智商模型列表 ({len(high_iq_models)}个): {high_iq_str}
-⚡ 快速模型列表 ({len(fast_models)}个): {fast_str}
-━━━━━━━━━━━━━━━━━━━━"""
+🎯 高智商模型提供商 ({len(high_iq_provider_ids)}个):
+{chr(10).join(high_iq_info) if high_iq_info else "  未配置"}
+⚡ 快速模型提供商 ({len(fast_provider_ids)}个):
+{chr(10).join(fast_info) if fast_info else "  未配置"}
+━━━━━━━━━━━━━━━━━━━━
+注: 插件会从提供商列表中随机选择"""
         
         yield event.plain_result(status_msg)
 
     @filter.command("judge_test")
     async def judge_test(self, event: AstrMessageEvent):
         """测试消息复杂度判断"""
-        # 获取测试消息（去掉命令部分）
+        # 获取测试消息(去掉命令部分)
         test_message = event.message_str
         if test_message.startswith("/judge_test"):
             test_message = test_message[len("/judge_test"):].strip()
         
         if not test_message:
-            yield event.plain_result("请提供测试消息，例如: /judge_test 帮我写一个Python排序算法")
+            yield event.plain_result("请提供测试消息,例如: /judge_test 帮我写一个Python排序算法")
             return
         
         try:
@@ -309,7 +354,7 @@ class JudgePlugin(Star):
 ━━━━━━━━━━━━━━━━━━━━
 📝 测试消息: {test_message[:50]}{"..." if len(test_message) > 50 else ""}
 📊 判断结果: {decision}
-🎯 推荐模型: {model_type}
+🎯 推荐模型类型: {model_type}
 ━━━━━━━━━━━━━━━━━━━━""")
         except Exception as e:
             yield event.plain_result(f"测试失败: {e}")
@@ -321,7 +366,7 @@ class JudgePlugin(Star):
         用法: /ask_high 你的问题
         别名: /高智商, /deep, /大
         """
-        # 获取问题内容（去掉命令部分）
+        # 获取问题内容(去掉命令部分)
         question = event.message_str
         # 移除可能的命令前缀
         for prefix in ["/ask_high", "/高智商", "/deep", "/大"]:
@@ -330,32 +375,31 @@ class JudgePlugin(Star):
                 break
         
         if not question:
-            yield event.plain_result("请提供问题，例如: /大 帮我分析一下这段代码的时间复杂度")
+            yield event.plain_result("请提供问题,例如: /大 帮我分析一下这段代码的时间复杂度")
             return
         
-        # 获取高智商模型配置（从列表中随机选择）
-        high_iq_model = self._get_high_iq_model()
-        judge_provider_id = self.config.get("judge_provider_id", "")
+        # 获取高智商模型配置(从列表中随机选择)
+        provider_id, model_name = self._get_high_iq_provider_model()
         
-        if not high_iq_model or not judge_provider_id:
-            yield event.plain_result("❌ 高智商模型未配置，请先在插件设置中配置 high_iq_models 列表和 judge_provider_id")
+        if not provider_id:
+            yield event.plain_result("❌ 高智商模型未配置,请先在插件设置中配置 high_iq_provider_ids 列表")
             return
         
         # 获取提供商
-        provider = self.context.get_provider_by_id(judge_provider_id)
+        provider = self.context.get_provider_by_id(provider_id)
         if not provider:
-            yield event.plain_result(f"❌ 找不到模型提供商: {judge_provider_id}")
+            yield event.plain_result(f"❌ 找不到模型提供商: {provider_id}")
             return
         
         try:
-            logger.info(f"[JudgePlugin] 使用高智商模型 {high_iq_model} 回答问题")
+            logger.info(f"[JudgePlugin] 使用高智商提供商 {provider_id}, 模型 {model_name or '默认'} 回答问题")
             
             # 调用高智商模型
             response = await provider.text_chat(
                 prompt=question,
                 context=[],
-                system_prompt="你是一个智能助手，请认真、详细地回答用户的问题。",
-                model=high_iq_model
+                system_prompt="你是一个智能助手,请认真、详细地回答用户的问题。",
+                model=model_name if model_name else None
             )
             
             answer = response.completion_text
@@ -363,7 +407,8 @@ class JudgePlugin(Star):
             yield event.plain_result(f"""🧠 高智商模型回答
 ━━━━━━━━━━━━━━━━━━━━
 📝 问题: {question[:50]}{"..." if len(question) > 50 else ""}
-🤖 模型: {high_iq_model}
+🤖 提供商: {provider_id}
+📋 模型: {model_name or '默认'}
 ━━━━━━━━━━━━━━━━━━━━
 {answer}""")
             
@@ -378,7 +423,7 @@ class JudgePlugin(Star):
         用法: /ask_fast 你的问题
         别名: /快速, /quick, /小
         """
-        # 获取问题内容（去掉命令部分）
+        # 获取问题内容(去掉命令部分)
         question = event.message_str
         # 移除可能的命令前缀
         for prefix in ["/ask_fast", "/快速", "/quick", "/小"]:
@@ -387,32 +432,31 @@ class JudgePlugin(Star):
                 break
         
         if not question:
-            yield event.plain_result("请提供问题，例如: /小 今天天气怎么样")
+            yield event.plain_result("请提供问题,例如: /小 今天天气怎么样")
             return
         
-        # 获取快速模型配置（从列表中随机选择）
-        fast_model = self._get_fast_model()
-        judge_provider_id = self.config.get("judge_provider_id", "")
+        # 获取快速模型配置(从列表中随机选择)
+        provider_id, model_name = self._get_fast_provider_model()
         
-        if not fast_model or not judge_provider_id:
-            yield event.plain_result("❌ 快速模型未配置，请先在插件设置中配置 fast_models 列表和 judge_provider_id")
+        if not provider_id:
+            yield event.plain_result("❌ 快速模型未配置,请先在插件设置中配置 fast_provider_ids 列表")
             return
         
         # 获取提供商
-        provider = self.context.get_provider_by_id(judge_provider_id)
+        provider = self.context.get_provider_by_id(provider_id)
         if not provider:
-            yield event.plain_result(f"❌ 找不到模型提供商: {judge_provider_id}")
+            yield event.plain_result(f"❌ 找不到模型提供商: {provider_id}")
             return
         
         try:
-            logger.info(f"[JudgePlugin] 使用快速模型 {fast_model} 回答问题")
+            logger.info(f"[JudgePlugin] 使用快速提供商 {provider_id}, 模型 {model_name or '默认'} 回答问题")
             
             # 调用快速模型
             response = await provider.text_chat(
                 prompt=question,
                 context=[],
-                system_prompt="你是一个智能助手，请简洁地回答用户的问题。",
-                model=fast_model
+                system_prompt="你是一个智能助手,请简洁地回答用户的问题。",
+                model=model_name if model_name else None
             )
             
             answer = response.completion_text
@@ -420,7 +464,8 @@ class JudgePlugin(Star):
             yield event.plain_result(f"""⚡ 快速模型回答
 ━━━━━━━━━━━━━━━━━━━━
 📝 问题: {question[:50]}{"..." if len(question) > 50 else ""}
-🤖 模型: {fast_model}
+🤖 提供商: {provider_id}
+📋 模型: {model_name or '默认'}
 ━━━━━━━━━━━━━━━━━━━━
 {answer}""")
             
@@ -430,12 +475,12 @@ class JudgePlugin(Star):
 
     @filter.command("ask_smart", alias={"智能问答", "smart", "问"})
     async def ask_smart(self, event: AstrMessageEvent):
-        """智能选择模型回答问题（先判断复杂度再选择模型）
+        """智能选择模型回答问题(先判断复杂度再选择模型)
         
         用法: /ask_smart 你的问题
         别名: /智能问答, /smart, /问
         """
-        # 获取问题内容（去掉命令部分）
+        # 获取问题内容(去掉命令部分)
         question = event.message_str
         # 移除可能的命令前缀
         for prefix in ["/ask_smart", "/智能问答", "/smart", "/问"]:
@@ -444,18 +489,7 @@ class JudgePlugin(Star):
                 break
         
         if not question:
-            yield event.plain_result("请提供问题，例如: /问 帮我解释一下量子计算")
-            return
-        
-        judge_provider_id = self.config.get("judge_provider_id", "")
-        if not judge_provider_id:
-            yield event.plain_result("❌ 模型提供商未配置，请先在插件设置中配置 judge_provider_id")
-            return
-        
-        # 获取提供商
-        provider = self.context.get_provider_by_id(judge_provider_id)
-        if not provider:
-            yield event.plain_result(f"❌ 找不到模型提供商: {judge_provider_id}")
+            yield event.plain_result("请提供问题,例如: /问 帮我解释一下量子计算")
             return
         
         try:
@@ -463,26 +497,32 @@ class JudgePlugin(Star):
             decision = await self._judge_message_complexity(question)
             
             if decision == "HIGH":
-                model = self._get_high_iq_model()
+                provider_id, model_name = self._get_high_iq_provider_model()
                 model_type = "🧠 高智商模型"
-                system_prompt = "你是一个智能助手，请认真、详细地回答用户的问题。"
+                system_prompt = "你是一个智能助手,请认真、详细地回答用户的问题。"
             else:
-                model = self._get_fast_model()
+                provider_id, model_name = self._get_fast_provider_model()
                 model_type = "⚡ 快速模型"
-                system_prompt = "你是一个智能助手，请简洁地回答用户的问题。"
+                system_prompt = "你是一个智能助手,请简洁地回答用户的问题。"
             
-            if not model:
+            if not provider_id:
                 yield event.plain_result(f"❌ {model_type}未配置")
                 return
             
-            logger.info(f"[JudgePlugin] 智能选择 {model_type} ({model}) 回答问题")
+            # 获取提供商
+            provider = self.context.get_provider_by_id(provider_id)
+            if not provider:
+                yield event.plain_result(f"❌ 找不到模型提供商: {provider_id}")
+                return
+            
+            logger.info(f"[JudgePlugin] 智能选择 {model_type} (提供商: {provider_id}, 模型: {model_name or '默认'}) 回答问题")
             
             # 调用选定的模型
             response = await provider.text_chat(
                 prompt=question,
                 context=[],
                 system_prompt=system_prompt,
-                model=model
+                model=model_name if model_name else None
             )
             
             answer = response.completion_text
@@ -491,7 +531,8 @@ class JudgePlugin(Star):
 ━━━━━━━━━━━━━━━━━━━━
 📝 问题: {question[:50]}{"..." if len(question) > 50 else ""}
 📊 判断: {decision} → {model_type}
-🤖 模型: {model}
+🤖 提供商: {provider_id}
+📋 模型: {model_name or '默认'}
 ━━━━━━━━━━━━━━━━━━━━
 {answer}""")
             
@@ -501,71 +542,83 @@ class JudgePlugin(Star):
 
     @filter.command("ping", alias={"测试", "test_llm"})
     async def ping_llm(self, event: AstrMessageEvent):
-        """测试LLM模型是否活跃（测试所有配置的模型）
+        """测试LLM模型是否活跃(测试所有配置的提供商)
         
         用法: /ping 或 /测试
         """
         import time
         
-        judge_provider_id = self.config.get("judge_provider_id", "")
+        high_iq_provider_ids = self.config.get("high_iq_provider_ids", [])
         high_iq_models = self.config.get("high_iq_models", [])
+        fast_provider_ids = self.config.get("fast_provider_ids", [])
         fast_models = self.config.get("fast_models", [])
         
         results = []
+        total = len(high_iq_provider_ids) + len(fast_provider_ids)
         
-        if not judge_provider_id:
-            yield event.plain_result("❌ 模型提供商未配置，请先在插件设置中配置 judge_provider_id")
+        if total == 0:
+            yield event.plain_result("❌ 未配置任何模型提供商")
             return
         
-        provider = self.context.get_provider_by_id(judge_provider_id)
-        if not provider:
-            yield event.plain_result(f"❌ 找不到模型提供商: {judge_provider_id}")
-            return
-        
-        total_models = len(high_iq_models) + len(fast_models)
-        yield event.plain_result(f"🔄 正在测试 {total_models} 个模型连接，请稍候...")
+        yield event.plain_result(f"🔄 正在测试 {total} 个提供商,请稍候...")
         
         # 测试高智商模型列表
-        if high_iq_models:
-            results.append(f"🧠 高智商模型 ({len(high_iq_models)}个):")
-            for model in high_iq_models:
+        if high_iq_provider_ids:
+            results.append(f"🧠 高智商模型提供商 ({len(high_iq_provider_ids)}个):")
+            for i, provider_id in enumerate(high_iq_provider_ids):
+                model_name = high_iq_models[i] if i < len(high_iq_models) else ""
+                provider = self.context.get_provider_by_id(provider_id)
+                
+                if not provider:
+                    results.append(f"  ├─ {provider_id}: ❌ 提供商不存在")
+                    continue
+                    
                 try:
                     start_time = time.time()
                     response = await provider.text_chat(
-                        prompt="请回复：OK",
+                        prompt="请回复:OK",
                         context=[],
                         system_prompt="只回复OK两个字母",
-                        model=model
+                        model=model_name if model_name else None
                     )
                     elapsed = time.time() - start_time
-                    results.append(f"  ├─ {model}: ✅ 活跃 ({elapsed:.2f}s)")
+                    display_model = model_name if model_name else "默认"
+                    results.append(f"  ├─ {provider_id} ({display_model}): ✅ 活跃 ({elapsed:.2f}s)")
                 except Exception as e:
-                    results.append(f"  ├─ {model}: ❌ 失败 - {str(e)[:30]}")
+                    display_model = model_name if model_name else "默认"
+                    results.append(f"  ├─ {provider_id} ({display_model}): ❌ 失败 - {str(e)[:30]}")
         else:
             results.append("🧠 高智商模型: ⚠️ 未配置")
         
         # 测试快速模型列表
-        if fast_models:
-            results.append(f"⚡ 快速模型 ({len(fast_models)}个):")
-            for model in fast_models:
+        if fast_provider_ids:
+            results.append(f"⚡ 快速模型提供商 ({len(fast_provider_ids)}个):")
+            for i, provider_id in enumerate(fast_provider_ids):
+                model_name = fast_models[i] if i < len(fast_models) else ""
+                provider = self.context.get_provider_by_id(provider_id)
+                
+                if not provider:
+                    results.append(f"  ├─ {provider_id}: ❌ 提供商不存在")
+                    continue
+                    
                 try:
                     start_time = time.time()
                     response = await provider.text_chat(
-                        prompt="请回复：OK",
+                        prompt="请回复:OK",
                         context=[],
                         system_prompt="只回复OK两个字母",
-                        model=model
+                        model=model_name if model_name else None
                     )
                     elapsed = time.time() - start_time
-                    results.append(f"  ├─ {model}: ✅ 活跃 ({elapsed:.2f}s)")
+                    display_model = model_name if model_name else "默认"
+                    results.append(f"  ├─ {provider_id} ({display_model}): ✅ 活跃 ({elapsed:.2f}s)")
                 except Exception as e:
-                    results.append(f"  ├─ {model}: ❌ 失败 - {str(e)[:30]}")
+                    display_model = model_name if model_name else "默认"
+                    results.append(f"  ├─ {provider_id} ({display_model}): ❌ 失败 - {str(e)[:30]}")
         else:
             results.append("⚡ 快速模型: ⚠️ 未配置")
         
         result_msg = f"""🏓 LLM模型活跃测试
-━━━━━━━━━━━━━━━━━━━━
-📡 提供商: {judge_provider_id}
 ━━━━━━━━━━━━━━━━━━━━
 """ + "\n".join(results)
         

@@ -3,33 +3,45 @@
         "description": "是否启用智能路由判断",
         "type": "bool",
         "default": true,
-        "hint": "启用后，插件会自动分析消息复杂度并选择合适的模型"
+        "hint": "启用后,插件会自动分析消息复杂度并选择合适的模型"
     },
     "judge_provider_id": {
         "description": "【必填】判断模型提供商ID",
         "type": "string",
         "default": "",
-        "hint": "用于判断消息复杂度的LLM提供商ID，此项为必填配置",
+        "hint": "用于判断消息复杂度的LLM提供商ID,此项为必填配置",
         "obvious_hint": true,
         "_special": "select_provider"
     },
     "judge_model": {
-        "description": "判断模型名称（可选）",
+        "description": "判断模型名称(可选)",
         "type": "string",
         "default": "",
-        "hint": "指定判断提供商使用的具体模型，留空则使用提供商默认模型。建议使用轻量快速的模型如 gpt-4o-mini"
+        "hint": "指定判断提供商使用的具体模型,留空则使用提供商默认模型。建议使用轻量快速的模型如 gpt-4o-mini"
+    },
+    "high_iq_provider_ids": {
+        "description": "高智商模型提供商列表",
+        "type": "list",
+        "default": [],
+        "hint": "用于处理复杂问题的模型提供商ID列表,支持配置多个。插件会随机选择一个使用"
     },
     "high_iq_models": {
-        "description": "高智商模型列表",
+        "description": "高智商模型名称列表",
         "type": "list",
         "default": [],
-        "hint": "用于处理复杂问题的模型列表，如 gpt-4o、claude-3-opus、deepseek-chat 等。配置多个时会随机选择一个使用"
+        "hint": "与提供商列表一一对应的模型名称。如 ['gpt-4o', 'claude-3-opus']。留空则使用提供商默认模型"
+    },
+    "fast_provider_ids": {
+        "description": "快速模型提供商列表",
+        "type": "list",
+        "default": [],
+        "hint": "用于处理简单问题的模型提供商ID列表,支持配置多个。插件会随机选择一个使用"
     },
     "fast_models": {
-        "description": "快速模型列表",
+        "description": "快速模型名称列表",
         "type": "list",
         "default": [],
-        "hint": "用于处理简单问题的模型列表，如 gpt-4o-mini、claude-3-haiku 等。配置多个时会随机选择一个使用"
+        "hint": "与提供商列表一一对应的模型名称。如 ['gpt-4o-mini', 'claude-3-haiku']。留空则使用提供商默认模型"
     },
     "default_decision": {
         "description": "默认判断结果",
@@ -42,7 +54,7 @@
         "description": "白名单",
         "type": "list",
         "default": [],
-        "hint": "只对白名单中的会话/群组/用户启用智能路由，留空表示对所有会话启用"
+        "hint": "只对白名单中的会话/群组/用户启用智能路由,留空表示对所有会话启用"
     },
     "blacklist": {
         "description": "黑名单",
@@ -54,6 +66,6 @@
         "description": "自定义判断提示词",
         "type": "text",
         "default": "",
-        "hint": "自定义判断消息复杂度的提示词，留空使用默认提示词。需包含 {message} 占位符"
+        "hint": "自定义判断消息复杂度的提示词,留空使用默认提示词。需包含 {message} 占位符"
     }
 }
