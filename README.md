@@ -234,7 +234,7 @@
 
 - **插件名称**: astrbot_plugin_judge
 - **版本**: 1.0.0
-- **作者**: AstrBot
+- **作者**: HEI
 - **仓库**: https://github.com/AstrBotDevs/astrbot_plugin_judge
 
 ## 许可证
