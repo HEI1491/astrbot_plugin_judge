@@ -136,6 +136,25 @@ $message
             logger.info("[JudgePlugin] 命令模式上下文: 关闭")
             
         logger.info("[JudgePlugin] 初始化完成")
+
     async def terminate(self):
         """插件销毁"""
         logger.info("[JudgePlugin] 智能路由判断插件已停止")
+
+
+JudgePlugin.on_llm_request = JudgeHooksMixin.on_llm_request
+JudgePlugin.on_llm_response = JudgeHooksMixin.on_llm_response
+
+JudgePlugin.judge_status = JudgeCommandsMixin.judge_status
+JudgePlugin.judge_stats = JudgeCommandsMixin.judge_stats
+JudgePlugin.judge_lock = JudgeCommandsMixin.judge_lock
+JudgePlugin.judge_unlock = JudgeCommandsMixin.judge_unlock
+JudgePlugin.judge_lock_status = JudgeCommandsMixin.judge_lock_status
+JudgePlugin.judge_test = JudgeCommandsMixin.judge_test
+JudgePlugin.ask_high_iq = JudgeCommandsMixin.ask_high_iq
+JudgePlugin.ask_fast = JudgeCommandsMixin.ask_fast
+JudgePlugin.ask_smart = JudgeCommandsMixin.ask_smart
+JudgePlugin.judge_health = JudgeCommandsMixin.judge_health
+JudgePlugin.judge_explain = JudgeCommandsMixin.judge_explain
+JudgePlugin.judge_rule = JudgeCommandsMixin.judge_rule
+JudgePlugin.judge_dryrun = JudgeCommandsMixin.judge_dryrun
