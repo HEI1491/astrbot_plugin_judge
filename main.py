@@ -6,19 +6,34 @@ AstrBot 智能路由判断插件
 from string import Template
 from astrbot.api.star import Context, Star
 from astrbot.api import logger, AstrBotConfig
-from judge_utils import JudgeUtilsMixin
-from judge_config import JudgeConfigMixin
-from judge_rules import JudgeRulesMixin
-from judge_router import JudgeRouterMixin
-from judge_stats import JudgeStatsMixin
-from judge_commands import JudgeCommandsMixin
-from judge_acl import JudgeAclMixin
-from judge_budget import JudgeBudgetMixin
-from judge_lock import JudgeLockMixin
-from judge_context import JudgeContextMixin
-from judge_llm import JudgeLlmMixin
-from judge_decider import JudgeDeciderMixin
-from judge_hooks import JudgeHooksMixin
+try:
+    from .judge_utils import JudgeUtilsMixin
+    from .judge_config import JudgeConfigMixin
+    from .judge_rules import JudgeRulesMixin
+    from .judge_router import JudgeRouterMixin
+    from .judge_stats import JudgeStatsMixin
+    from .judge_commands import JudgeCommandsMixin
+    from .judge_acl import JudgeAclMixin
+    from .judge_budget import JudgeBudgetMixin
+    from .judge_lock import JudgeLockMixin
+    from .judge_context import JudgeContextMixin
+    from .judge_llm import JudgeLlmMixin
+    from .judge_decider import JudgeDeciderMixin
+    from .judge_hooks import JudgeHooksMixin
+except Exception:
+    from judge_utils import JudgeUtilsMixin
+    from judge_config import JudgeConfigMixin
+    from judge_rules import JudgeRulesMixin
+    from judge_router import JudgeRouterMixin
+    from judge_stats import JudgeStatsMixin
+    from judge_commands import JudgeCommandsMixin
+    from judge_acl import JudgeAclMixin
+    from judge_budget import JudgeBudgetMixin
+    from judge_lock import JudgeLockMixin
+    from judge_context import JudgeContextMixin
+    from judge_llm import JudgeLlmMixin
+    from judge_decider import JudgeDeciderMixin
+    from judge_hooks import JudgeHooksMixin
 
 
 class JudgePlugin(
