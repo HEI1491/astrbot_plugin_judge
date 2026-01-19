@@ -39,6 +39,32 @@
 用户消息 → on_llm_request钩子 → 判断模型分析 → 选择目标提供商 → 修改请求 → 继续执行
 ```
 
+## 行为说明(运营/体验)
+
+### 自动路由(on_llm_request)
+
+- 触发条件: 插件启用且消息非空,并且通过 ACL 检查
+- ACL 匹配键: `unified_msg_origin` / `group_id` / `sender_id` 三者任意命中即可生效(白名单/黑名单/策略列表同理)
+- 选择顺序(从高到低优先级):
+  1. 模型池策略: `fast_only_list` / `high_only_list` 可强制只用某个模型池
+  2. 会话锁定: `/judge_lock` 可在接下来 N 轮覆盖模型池/提供商/模型(锁定也会受模型池策略限制)
+  3. 复杂度判定: 规则预判/缓存/判断模型决定 HIGH 或 FAST
+  4. 预算控制: 若判定 HIGH 但预算未通过,会降级到 FAST
+  5. 提供商选择: 优先使用策略强制 provider/model(可选),否则从对应模型池列表中随机/固定选择
+
+### 插件指令(/大 /小 /问 /judge_*)
+
+- 指令 ACL: `command_whitelist/command_blacklist` 控制所有插件指令; `command_acl_json` 可按具体指令单独配置(优先级更高)
+- 模型池策略与指令冲突时:
+  - `/大` 遇到仅快策略: `fast_only_action_for_high_cmd` 可选 REJECT(拒绝) 或 DOWNGRADE(降级为快速执行)
+  - `/小` 遇到仅高策略: `high_only_action_for_fast_cmd` 可选 REJECT 或 DOWNGRADE(升级为高智商执行)
+  - `/问` 会按策略自动调整最终模型池,并在开启 `enable_policy_notice` 时提示降级/升级
+
+### 统计与锁定
+
+- `/judge_stats`: 内存统计,重启清空;耗时统计依赖平台 `message_id` 关联请求与响应,若平台不提供可能缺少延迟数据
+- `/judge_lock`: 锁定按会话(`unified_msg_origin`)生效,每次命中会消耗 1 轮,并受 `session_lock_ttl_seconds` 自动过期
+
 ### 判断标准
 
 **高智商模型** 适用于:
@@ -191,12 +217,12 @@
 
 | 命令 | 别名 | 说明 |
 |------|------|------|
-| `/judge_status` | - | 查看插件状态和配置 |
-| `/judge_stats` | - | 查看路由与LLM统计 |
-| `/judge_test <消息>` | - | 测试消息复杂度判断 |
-| `/judge_lock [all|router|cmd] [HIGH|FAST] [轮数] [provider_id] [model]` | `/锁定`, `/lock` | 临时锁定模型池/提供商/模型(按轮数自动失效) |
-| `/judge_unlock` | `/解锁`, `/unlock` | 解除当前会话锁定 |
-| `/judge_lock_status` | `/锁定状态`, `/lock_status` | 查看当前会话锁定状态 |
+| `/judge_status` | `/状态`, `/status` | 查看插件状态和配置 |
+| `/judge_stats` | `/统计`, `/stats` | 查看路由与LLM统计 |
+| `/judge_test <消息>` | `/判定` | 测试消息复杂度判断 |
+| `/judge_lock [all|router|cmd] [HIGH|FAST] [轮数] [provider_id] [model]` | `/锁定`, `/锁`, `/锁模型`, `/lock` | 临时锁定模型池/提供商/模型(按轮数自动失效) |
+| `/judge_unlock` | `/解锁`, `/解`, `/unlock` | 解除当前会话锁定 |
+| `/judge_lock_status` | `/锁定状态`, `/锁状态`, `/lock_status` | 查看当前会话锁定状态 |
 | `/ask_high <问题>` | `/高智商`, `/deep`, `/大` | 使用高智商模型直接回答问题 |
 | `/ask_fast <问题>` | `/快速`, `/quick`, `/小` | 使用快速模型直接回答问题 |
 | `/ask_smart <问题>` | `/智能问答`, `/smart`, `/问` | 智能选择模型回答问题 |

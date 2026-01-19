@@ -1038,7 +1038,7 @@ $message
             logger.error(f"[JudgePlugin] {model_type}调用失败: {e}")
             yield event.plain_result(f"❌ 调用失败: {e}")
 
-    @filter.command("judge_status")
+    @filter.command("judge_status", alias={"状态", "status"})
     async def judge_status(self, event: AstrMessageEvent):
         """查看智能路由插件状态"""
         if not self._is_command_allowed(event, "judge_status"):
@@ -1090,7 +1090,7 @@ $message
         
         yield event.plain_result(status_msg)
 
-    @filter.command("judge_stats")
+    @filter.command("judge_stats", alias={"统计", "stats"})
     async def judge_stats(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_stats"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -1164,13 +1164,13 @@ $message
         
         yield event.plain_result(msg)
 
-    @filter.command("judge_lock", alias={"锁定", "lock"})
+    @filter.command("judge_lock", alias={"锁定", "lock", "锁", "锁模型"})
     async def judge_lock(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_lock"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
             return
         
-        args = self._extract_command_args(event.message_str, ["judge_lock", "锁定", "lock"])
+        args = self._extract_command_args(event.message_str, ["judge_lock", "锁定", "lock", "锁", "锁模型"])
         if not args:
             yield event.plain_result("用法: /judge_lock [all|router|cmd] [HIGH|FAST] [轮数] [provider_id] [model]")
             return
@@ -1197,7 +1197,7 @@ $message
             return
         yield event.plain_result(f"✅ 已锁定: scope={scope}, pool={pool or '不限制'}, turns={turns}, provider={provider_id or '不限制'}, model={model_name or '默认'}")
 
-    @filter.command("judge_unlock", alias={"解锁", "unlock"})
+    @filter.command("judge_unlock", alias={"解锁", "unlock", "解"})
     async def judge_unlock(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_unlock"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -1205,7 +1205,7 @@ $message
         existed = self._clear_lock(event)
         yield event.plain_result("✅ 已解锁" if existed else "当前会话未设置锁定")
 
-    @filter.command("judge_lock_status", alias={"锁定状态", "lock_status"})
+    @filter.command("judge_lock_status", alias={"锁定状态", "lock_status", "锁状态"})
     async def judge_lock_status(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_lock_status"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -1223,7 +1223,7 @@ $message
         model = lock.get("model", "") or "默认"
         yield event.plain_result(f"🔒 锁定状态: scope={scope}, pool={pool}, turns={turns}, provider={provider_id}, model={model}")
 
-    @filter.command("judge_test")
+    @filter.command("judge_test", alias={"判定"})
     async def judge_test(self, event: AstrMessageEvent):
         """测试消息复杂度判断"""
         if not self._is_command_allowed(event, "judge_test"):
