@@ -159,6 +159,116 @@
         "default": [],
         "hint": "黑名单中的会话/群组/用户不启用智能路由"
     },
+    "router_whitelist": {
+        "description": "路由白名单(仅自动路由)",
+        "type": "list",
+        "default": [],
+        "hint": "仅对自动路由(on_llm_request)生效;为空表示不额外限制"
+    },
+    "router_blacklist": {
+        "description": "路由黑名单(仅自动路由)",
+        "type": "list",
+        "default": [],
+        "hint": "仅对自动路由(on_llm_request)生效"
+    },
+    "command_whitelist": {
+        "description": "指令白名单(仅插件指令)",
+        "type": "list",
+        "default": [],
+        "hint": "仅对插件指令(/大 /小 /问 /judge_*)生效;为空表示不额外限制"
+    },
+    "command_blacklist": {
+        "description": "指令黑名单(仅插件指令)",
+        "type": "list",
+        "default": [],
+        "hint": "仅对插件指令(/大 /小 /问 /judge_*)生效"
+    },
+    "command_acl_json": {
+        "description": "按指令单独ACL(JSON)",
+        "type": "text",
+        "default": "",
+        "hint": "JSON对象: {\"ask_high\":{\"whitelist\":[],\"blacklist\":[]},\"*\":{...}}，键为命令名(如 ask_high/judge_stats)"
+    },
+    "fast_only_list": {
+        "description": "仅允许快速模型列表",
+        "type": "list",
+        "default": [],
+        "hint": "匹配到的会话/群/用户将只允许快速模型(会阻止 /大)"
+    },
+    "high_only_list": {
+        "description": "仅允许高智商模型列表",
+        "type": "list",
+        "default": [],
+        "hint": "匹配到的会话/群/用户将只允许高智商模型(会阻止 /小)"
+    },
+    "enable_policy_notice": {
+        "description": "启用策略提示(命令输出)",
+        "type": "bool",
+        "default": true,
+        "hint": "当策略/限制导致模型池被降级或升级时,在命令输出中显示提示"
+    },
+    "fast_only_action_for_high_cmd": {
+        "description": "仅快策略下 /大 行为",
+        "type": "string",
+        "default": "REJECT",
+        "options": ["REJECT", "DOWNGRADE"],
+        "hint": "REJECT:直接拒绝; DOWNGRADE:仍执行但改用快速模型"
+    },
+    "high_only_action_for_fast_cmd": {
+        "description": "仅高策略下 /小 行为",
+        "type": "string",
+        "default": "REJECT",
+        "options": ["REJECT", "DOWNGRADE"],
+        "hint": "REJECT:直接拒绝; DOWNGRADE:仍执行但改用高智商模型"
+    },
+    "fast_only_forced_provider_id": {
+        "description": "仅快策略强制提供商(可选)",
+        "type": "string",
+        "default": "",
+        "hint": "命中仅快策略时,若填写则固定使用该 provider_id(优先于随机选择)"
+    },
+    "fast_only_forced_model": {
+        "description": "仅快策略强制模型(可选)",
+        "type": "string",
+        "default": "",
+        "hint": "配合仅快策略强制提供商使用;留空则用提供商默认模型"
+    },
+    "high_only_forced_provider_id": {
+        "description": "仅高策略强制提供商(可选)",
+        "type": "string",
+        "default": "",
+        "hint": "命中仅高策略时,若填写则固定使用该 provider_id(优先于随机选择)"
+    },
+    "high_only_forced_model": {
+        "description": "仅高策略强制模型(可选)",
+        "type": "string",
+        "default": "",
+        "hint": "配合仅高策略强制提供商使用;留空则用提供商默认模型"
+    },
+    "enable_stats": {
+        "description": "启用统计",
+        "type": "bool",
+        "default": true,
+        "hint": "启用后可使用 /judge_stats 查看路由与LLM调用统计(内存统计,重启清空)"
+    },
+    "stats_max_records": {
+        "description": "统计记录最大条数",
+        "type": "int",
+        "default": 200,
+        "hint": "内存中保留最近N条统计记录"
+    },
+    "enable_session_lock": {
+        "description": "启用会话锁定/临时覆盖",
+        "type": "bool",
+        "default": true,
+        "hint": "启用后可使用 /judge_lock /judge_unlock 临时锁定 provider/model"
+    },
+    "session_lock_ttl_seconds": {
+        "description": "会话锁定TTL(秒)",
+        "type": "int",
+        "default": 3600,
+        "hint": "超过该时间锁定自动失效"
+    },
     "custom_judge_prompt": {
         "description": "自定义判断提示词",
         "type": "text",

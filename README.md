@@ -10,9 +10,21 @@
 - **灵活配置**:支持配置多个高智商/快速模型提供商,每个提供商可指定模型
 - **随机选择**:高智商模型支持从提供商列表中随机选择(可关闭),实现负载均衡
 - **降本优化**:预算控制、规则预判、决策缓存、命令回答缓存
+- **运营控制**:分级ACL、模型池限制、统计面板、会话临时锁定
 - **白名单/黑名单**:支持按会话、群组、用户进行过滤
 
 ## 更新日志
+
+### 1.2.1
+
+- 新增策略提示与策略强制提供商配置: 允许在命令输出提示降级/升级,并可将仅快/仅高策略固定到指定 provider/model
+
+### 1.2.0
+
+- 新增分级ACL: 路由/指令/单指令白名单黑名单
+- 新增模型池限制: 可配置某些会话/群/用户仅允许高智商或仅允许快速
+- 新增统计面板: /judge_stats 查看路由与LLM成功率、延迟、命中原因等
+- 新增会话临时锁定: /judge_lock /judge_unlock /judge_lock_status
 
 ### 1.1.3
 
@@ -82,6 +94,24 @@
 | `default_decision` | 默认判断结果(HIGH/FAST) | 否 | `FAST` |
 | `whitelist` | 白名单列表 | 否 | `[]` |
 | `blacklist` | 黑名单列表 | 否 | `[]` |
+| `router_whitelist` | 路由白名单(仅自动路由) | 否 | `[]` |
+| `router_blacklist` | 路由黑名单(仅自动路由) | 否 | `[]` |
+| `command_whitelist` | 指令白名单(仅插件指令) | 否 | `[]` |
+| `command_blacklist` | 指令黑名单(仅插件指令) | 否 | `[]` |
+| `command_acl_json` | 按指令单独ACL(JSON) | 否 | 空 |
+| `fast_only_list` | 仅允许快速模型列表 | 否 | `[]` |
+| `high_only_list` | 仅允许高智商模型列表 | 否 | `[]` |
+| `enable_policy_notice` | 启用策略提示(命令输出) | 否 | `true` |
+| `fast_only_action_for_high_cmd` | 仅快策略下 /大 行为(REJECT/DOWNGRADE) | 否 | `REJECT` |
+| `high_only_action_for_fast_cmd` | 仅高策略下 /小 行为(REJECT/DOWNGRADE) | 否 | `REJECT` |
+| `fast_only_forced_provider_id` | 仅快策略强制提供商(可选) | 否 | 空 |
+| `fast_only_forced_model` | 仅快策略强制模型(可选) | 否 | 空 |
+| `high_only_forced_provider_id` | 仅高策略强制提供商(可选) | 否 | 空 |
+| `high_only_forced_model` | 仅高策略强制模型(可选) | 否 | 空 |
+| `enable_stats` | 启用统计 | 否 | `true` |
+| `stats_max_records` | 统计记录最大条数 | 否 | `200` |
+| `enable_session_lock` | 启用会话锁定/临时覆盖 | 否 | `true` |
+| `session_lock_ttl_seconds` | 会话锁定TTL(秒) | 否 | `3600` |
 | `custom_judge_prompt` | 自定义判断提示词 | 否 | 内置提示词 |
 
 ### 配置示例
@@ -139,6 +169,12 @@
 - `enable_rule_prejudge` 为 `true` 时,明显简单/复杂消息会直接判定,避免调用判断模型
 - `enable_decision_cache` 为 `true` 时,会缓存消息的判定结果,降低重复判断开销
 - `enable_answer_cache` 为 `true` 时,命令问答会对重复问题短期缓存答案(命令上下文开启时默认不命中)
+- `router_whitelist/router_blacklist` 仅影响自动路由; `command_whitelist/command_blacklist` 仅影响插件指令
+- `command_acl_json` 可按具体指令单独配置白名单/黑名单(优先级高于 command_whitelist/blacklist)
+- `fast_only_list/high_only_list` 可限制某些会话/群/用户只允许某个模型池(用于运营管控)
+- `fast_only_action_for_high_cmd/high_only_action_for_fast_cmd` 可决定策略冲突时是拒绝还是降级执行
+- `fast_only_forced_provider_id/high_only_forced_provider_id` 可把策略命中的模型池固定到指定 provider/model
+- `/judge_stats` 查看内存统计(重启清空); `/judge_lock` 可临时锁定接下来N轮的模型选择
 
 ## 使用命令
 
@@ -156,7 +192,11 @@
 | 命令 | 别名 | 说明 |
 |------|------|------|
 | `/judge_status` | - | 查看插件状态和配置 |
+| `/judge_stats` | - | 查看路由与LLM统计 |
 | `/judge_test <消息>` | - | 测试消息复杂度判断 |
+| `/judge_lock [all|router|cmd] [HIGH|FAST] [轮数] [provider_id] [model]` | `/锁定`, `/lock` | 临时锁定模型池/提供商/模型(按轮数自动失效) |
+| `/judge_unlock` | `/解锁`, `/unlock` | 解除当前会话锁定 |
+| `/judge_lock_status` | `/锁定状态`, `/lock_status` | 查看当前会话锁定状态 |
 | `/ask_high <问题>` | `/高智商`, `/deep`, `/大` | 使用高智商模型直接回答问题 |
 | `/ask_fast <问题>` | `/快速`, `/quick`, `/小` | 使用快速模型直接回答问题 |
 | `/ask_smart <问题>` | `/智能问答`, `/smart`, `/问` | 智能选择模型回答问题 |
@@ -276,7 +316,7 @@
 ## 开发者信息
 
 - **插件名称**: astrbot_plugin_judge
-- **版本**: 1.1.3
+- **版本**: 1.2.1
 - **作者**: HEI
 - **仓库**: https://github.com/AstrBotDevs/astrbot_plugin_judge
 

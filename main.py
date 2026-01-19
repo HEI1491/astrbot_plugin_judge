@@ -21,6 +21,10 @@ class JudgePlugin(Star):
         self.config = config
         self._decision_cache = {}
         self._answer_cache = {}
+        self._session_locks = {}
+        self._stats_records = []
+        self._stats_counters = {}
+        self._llm_pending = {}
         
         # 判断提示词模板 - 使用 string.Template 避免花括号注入问题
         self.judge_prompt_template = Template("""你是一个消息复杂度判断助手。请分析以下用户消息,判断它需要使用哪种模型来回答。
@@ -247,15 +251,244 @@ $message
         if ratio <= 0:
             return False
         return random.randint(1, 100) <= ratio
+
+    def _get_event_keys(self, event: AstrMessageEvent) -> set:
+        session_id = str(getattr(event, "unified_msg_origin", "") or "")
+        group_id = str(event.get_group_id() if hasattr(event, "get_group_id") else "")
+        sender_id = str(event.get_sender_id() if hasattr(event, "get_sender_id") else "")
+        keys = set()
+        if session_id:
+            keys.add(session_id)
+        if group_id:
+            keys.add(group_id)
+        if sender_id:
+            keys.add(sender_id)
+        return keys
+    
+    def _acl_allows(self, keys: set, whitelist, blacklist) -> bool:
+        if isinstance(whitelist, list) and whitelist:
+            if not any(k in whitelist for k in keys):
+                return False
+        if isinstance(blacklist, list) and blacklist:
+            if any(k in blacklist for k in keys):
+                return False
+        return True
+    
+    def _get_command_acl(self, command_name: str) -> tuple:
+        raw = self.config.get("command_acl_json", "")
+        if not raw:
+            return ([], [])
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return ([], [])
+        if not isinstance(data, dict):
+            return ([], [])
+        item = data.get(command_name) or data.get("*")
+        if not isinstance(item, dict):
+            return ([], [])
+        wl = item.get("whitelist", [])
+        bl = item.get("blacklist", [])
+        return (wl if isinstance(wl, list) else [], bl if isinstance(bl, list) else [])
+    
+    def _is_router_allowed(self, event: AstrMessageEvent) -> bool:
+        keys = self._get_event_keys(event)
+        if not self._acl_allows(keys, self.config.get("whitelist", []), self.config.get("blacklist", [])):
+            return False
+        return self._acl_allows(keys, self.config.get("router_whitelist", []), self.config.get("router_blacklist", []))
+    
+    def _is_command_allowed(self, event: AstrMessageEvent, command_name: str) -> bool:
+        keys = self._get_event_keys(event)
+        if not self._acl_allows(keys, self.config.get("whitelist", []), self.config.get("blacklist", [])):
+            return False
+        if not self._acl_allows(keys, self.config.get("command_whitelist", []), self.config.get("command_blacklist", [])):
+            return False
+        wl, bl = self._get_command_acl(command_name)
+        return self._acl_allows(keys, wl, bl)
+    
+    def _get_pool_policy(self, event: AstrMessageEvent) -> str:
+        keys = self._get_event_keys(event)
+        fast_only = self.config.get("fast_only_list", [])
+        high_only = self.config.get("high_only_list", [])
+        if isinstance(fast_only, list) and any(k in fast_only for k in keys):
+            return "FAST_ONLY"
+        if isinstance(high_only, list) and any(k in high_only for k in keys):
+            return "HIGH_ONLY"
+        return ""
+    
+    def _session_key(self, event: AstrMessageEvent) -> str:
+        return getattr(event, "unified_msg_origin", "") or ""
+    
+    def _get_lock(self, event: AstrMessageEvent, scope: str):
+        if not self.config.get("enable_session_lock", True):
+            return None
+        sk = self._session_key(event)
+        if not sk:
+            return None
+        lock = self._session_locks.get(sk)
+        if not isinstance(lock, dict):
+            return None
+        now = self._now_ts()
+        expires_at = lock.get("expires_at", 0) or 0
+        if expires_at and expires_at < now:
+            self._session_locks.pop(sk, None)
+            return None
+        turns = lock.get("turns", 0) or 0
+        if turns <= 0:
+            self._session_locks.pop(sk, None)
+            return None
+        lock_scope = str(lock.get("scope", "all") or "all").lower()
+        if lock_scope not in ("all", "router", "cmd"):
+            lock_scope = "all"
+        if scope == "router" and lock_scope == "cmd":
+            return None
+        if scope == "cmd" and lock_scope == "router":
+            return None
+        return lock
+    
+    def _consume_lock(self, event: AstrMessageEvent, scope: str):
+        lock = self._get_lock(event, scope)
+        if not lock:
+            return None
+        sk = self._session_key(event)
+        lock["turns"] = int(lock.get("turns", 0) or 0) - 1
+        if lock["turns"] <= 0:
+            self._session_locks.pop(sk, None)
+        else:
+            self._session_locks[sk] = lock
+        return lock
+    
+    def _set_lock(self, event: AstrMessageEvent, scope: str, pool: str, turns: int, provider_id: str, model_name: str):
+        sk = self._session_key(event)
+        if not sk:
+            return False
+        try:
+            turns = int(turns)
+        except Exception:
+            turns = 5
+        if turns <= 0:
+            turns = 1
+        ttl = self.config.get("session_lock_ttl_seconds", 3600)
+        try:
+            ttl = int(ttl)
+        except Exception:
+            ttl = 3600
+        if ttl < 60:
+            ttl = 60
+        now = self._now_ts()
+        pool = (pool or "").upper()
+        if pool not in ("HIGH", "FAST"):
+            pool = ""
+        lock_scope = (scope or "all").lower()
+        if lock_scope not in ("all", "router", "cmd"):
+            lock_scope = "all"
+        self._session_locks[sk] = {
+            "scope": lock_scope,
+            "pool": pool,
+            "provider_id": provider_id or "",
+            "model": model_name or "",
+            "turns": turns,
+            "created_at": now,
+            "expires_at": now + ttl
+        }
+        return True
+    
+    def _clear_lock(self, event: AstrMessageEvent):
+        sk = self._session_key(event)
+        if not sk:
+            return False
+        existed = sk in self._session_locks
+        self._session_locks.pop(sk, None)
+        return existed
+    
+    def _apply_pool_policy(self, event: AstrMessageEvent, desired_pool: str) -> tuple:
+        policy = self._get_pool_policy(event)
+        pool = (desired_pool or "").upper()
+        if pool not in ("HIGH", "FAST"):
+            pool = "FAST"
+        if policy == "FAST_ONLY":
+            pool = "FAST"
+        elif policy == "HIGH_ONLY":
+            pool = "HIGH"
+        return (pool, policy)
+
+    def _get_forced_provider_by_policy(self, policy: str, pool: str) -> tuple:
+        policy = (policy or "").upper()
+        pool = (pool or "").upper()
+        if pool not in ("HIGH", "FAST"):
+            return ("", "")
+        if policy == "FAST_ONLY":
+            provider_id = str(self.config.get("fast_only_forced_provider_id", "") or "")
+            model_name = str(self.config.get("fast_only_forced_model", "") or "")
+            return (provider_id, model_name)
+        if policy == "HIGH_ONLY":
+            provider_id = str(self.config.get("high_only_forced_provider_id", "") or "")
+            model_name = str(self.config.get("high_only_forced_model", "") or "")
+            return (provider_id, model_name)
+        return ("", "")
+    
+    def _select_pool_and_provider(self, event: AstrMessageEvent, scope: str, desired_pool: str) -> tuple:
+        pool, policy = self._apply_pool_policy(event, desired_pool)
+        lock = self._consume_lock(event, scope)
+        if lock and lock.get("pool"):
+            lock_pool = str(lock.get("pool") or "").upper()
+            if lock_pool in ("HIGH", "FAST"):
+                if policy != "FAST_ONLY" or lock_pool != "HIGH":
+                    if policy != "HIGH_ONLY" or lock_pool != "FAST":
+                        pool = lock_pool
+        provider_id = ""
+        model_name = ""
+        if lock and lock.get("provider_id"):
+            provider_id = str(lock.get("provider_id") or "")
+            model_name = str(lock.get("model") or "")
+        else:
+            forced_provider_id, forced_model = self._get_forced_provider_by_policy(policy, pool)
+            if forced_provider_id:
+                provider_id = forced_provider_id
+                model_name = forced_model
+            elif pool == "HIGH":
+                provider_id, model_name = self._get_high_iq_provider_model()
+            else:
+                provider_id, model_name = self._get_fast_provider_model()
+        return (pool, policy, lock, provider_id, model_name)
+    
+    def _stats_inc(self, key: str, delta: int = 1):
+        if not self.config.get("enable_stats", True):
+            return
+        try:
+            self._stats_counters[key] = int(self._stats_counters.get(key, 0) or 0) + int(delta)
+        except Exception:
+            self._stats_counters[key] = self._stats_counters.get(key, 0) or 0
+    
+    def _stats_add_record(self, record: dict):
+        if not self.config.get("enable_stats", True):
+            return
+        max_records = self.config.get("stats_max_records", 200)
+        try:
+            max_records = int(max_records)
+        except Exception:
+            max_records = 200
+        if max_records <= 0:
+            return
+        while len(self._stats_records) >= max_records:
+            try:
+                self._stats_records.pop(0)
+            except Exception:
+                break
+        self._stats_records.append(record)
     
     def _rule_prejudge(self, message: str) -> str:
+        decision, _ = self._rule_prejudge_detail(message)
+        return decision
+    
+    def _rule_prejudge_detail(self, message: str) -> tuple:
         message_str = message or ""
         message_lower = message_str.lower()
         
         if len(message_str) > 200:
-            return "HIGH"
+            return ("HIGH", "len>200")
         if "```" in message_str or "def " in message_lower or "function " in message_lower:
-            return "HIGH"
+            return ("HIGH", "codeblock")
         
         complex_keywords = [
             "代码", "编程", "程序", "算法", "函数", "类", "接口",
@@ -279,16 +512,16 @@ $message
         
         for keyword in complex_keywords:
             if keyword in message_lower:
-                return "HIGH"
+                return ("HIGH", f"kw:{keyword}")
         
         for keyword in simple_keywords:
             if keyword in message_lower:
-                return "FAST"
+                return ("FAST", f"kw:{keyword}")
         
         if len(message_str) <= 20 and ("?" in message_str or "？" in message_str):
-            return "FAST"
+            return ("FAST", "short_question")
         
-        return "UNKNOWN"
+        return ("UNKNOWN", "")
     
     async def _get_command_llm_context(self, event: AstrMessageEvent) -> list:
         if not self.config.get("enable_command_context", False):
@@ -452,73 +685,154 @@ $message
         if not user_message or len(user_message.strip()) == 0:
             return
         
-        # 检查是否在白名单/黑名单中
-        if not self._should_process(event):
+        if not self._is_router_allowed(event):
             return
         
         logger.debug(f"[JudgePlugin] 收到消息: {user_message[:50]}...")
         
         try:
-            # 调用判断模型
-            decision = await self._judge_message_complexity(user_message)
+            decision, judge_source, judge_reason = await self._judge_message_complexity_with_meta(user_message)
             
-            use_high_iq = decision == "HIGH" and self._budget_allows_high_iq(event)
+            desired_pool = "HIGH" if decision == "HIGH" else "FAST"
+            budget_blocked = False
+            if desired_pool == "HIGH" and not self._budget_allows_high_iq(event):
+                desired_pool = "FAST"
+                budget_blocked = True
             
-            if use_high_iq:
-                # 使用高智商模型(从列表中随机选择)
-                provider_id, model_name = self._get_high_iq_provider_model()
-                if provider_id:
-                    # 修改请求的提供商和模型
-                    req.provider_id = provider_id
-                    if model_name:
-                        req.model = model_name
-                    logger.info(f"[JudgePlugin] 消息判定为复杂,使用高智商提供商: {provider_id}, 模型: {model_name or '默认'}")
+            policy = self._get_pool_policy(event)
+            if policy == "FAST_ONLY":
+                desired_pool = "FAST"
+            elif policy == "HIGH_ONLY":
+                desired_pool = "HIGH"
+            
+            lock = self._consume_lock(event, "router")
+            if lock and lock.get("pool"):
+                lock_pool = str(lock.get("pool")).upper()
+                if policy != "FAST_ONLY" or lock_pool != "HIGH":
+                    if policy != "HIGH_ONLY" or lock_pool != "FAST":
+                        desired_pool = lock_pool
+            
+            provider_id = ""
+            model_name = ""
+            if lock and lock.get("provider_id"):
+                provider_id = str(lock.get("provider_id") or "")
+                model_name = str(lock.get("model") or "")
             else:
-                # 使用快速模型(从列表中随机选择)
-                provider_id, model_name = self._get_fast_provider_model()
-                if provider_id:
-                    # 修改请求的提供商和模型
-                    req.provider_id = provider_id
-                    if model_name:
-                        req.model = model_name
-                    logger.info(f"[JudgePlugin] 消息判定为简单,使用快速提供商: {provider_id}, 模型: {model_name or '默认'}")
+                if desired_pool == "HIGH":
+                    provider_id, model_name = self._get_high_iq_provider_model()
+                else:
+                    provider_id, model_name = self._get_fast_provider_model()
+            
+            if provider_id:
+                req.provider_id = provider_id
+                if model_name:
+                    req.model = model_name
+            
+            self._stats_inc("router_total")
+            if decision == "HIGH":
+                self._stats_inc("router_decision_high")
+            else:
+                self._stats_inc("router_decision_fast")
+            if desired_pool == "HIGH":
+                self._stats_inc("router_use_high")
+            else:
+                self._stats_inc("router_use_fast")
+            if budget_blocked:
+                self._stats_inc("router_budget_blocked")
+            if policy:
+                self._stats_inc(f"router_policy_{policy.lower()}")
+            if lock:
+                self._stats_inc("router_lock_used")
+            
+            msg_obj = getattr(event, "message_obj", None)
+            msg_id = getattr(msg_obj, "message_id", "") if msg_obj else ""
+            if msg_id:
+                try:
+                    import time
+                    self._llm_pending[msg_id] = {
+                        "t0": time.perf_counter(),
+                        "decision": decision,
+                        "judge_source": judge_source,
+                        "judge_reason": judge_reason,
+                        "pool": desired_pool,
+                        "provider_id": provider_id,
+                        "model": model_name,
+                        "policy": policy,
+                        "budget_blocked": budget_blocked,
+                        "lock": True if lock else False
+                    }
+                except Exception:
+                    pass
                     
         except Exception as e:
             logger.error(f"[JudgePlugin] 判断过程出错: {e}")
             # 出错时使用默认模型,不修改请求
 
-    async def _judge_message_complexity(self, message: str) -> str:
-        """
-        调用判断模型分析消息复杂度
-        
-        Args:
-            message: 用户消息
-            
-        Returns:
-            "HIGH" 或 "FAST"
-        """
-        if self.config.get("enable_rule_prejudge", True):
-            pre = self._rule_prejudge(message)
-            if pre in ("HIGH", "FAST"):
-                return pre
-        
+    @filter.on_llm_response()
+    async def on_llm_response(self, event: AstrMessageEvent, resp):
+        if not self.config.get("enable", True):
+            return
+        if not self.config.get("enable_stats", True):
+            return
+        msg_obj = getattr(event, "message_obj", None)
+        msg_id = getattr(msg_obj, "message_id", "") if msg_obj else ""
+        if not msg_id:
+            return
+        pending = self._llm_pending.pop(msg_id, None)
+        if not isinstance(pending, dict):
+            return
+        try:
+            import time
+            elapsed_ms = (time.perf_counter() - float(pending.get("t0", 0) or 0)) * 1000
+        except Exception:
+            elapsed_ms = 0
+        role = str(getattr(resp, "role", "") or "")
+        ok = role != "err"
+        if ok:
+            self._stats_inc("llm_ok")
+        else:
+            self._stats_inc("llm_err")
+        self._stats_add_record(
+            {
+                "ts": self._now_ts(),
+                "kind": "llm",
+                "ok": ok,
+                "role": role,
+                "elapsed_ms": int(elapsed_ms),
+                "decision": pending.get("decision"),
+                "judge_source": pending.get("judge_source"),
+                "judge_reason": pending.get("judge_reason"),
+                "pool": pending.get("pool"),
+                "provider_id": pending.get("provider_id"),
+                "model": pending.get("model"),
+                "policy": pending.get("policy"),
+                "budget_blocked": pending.get("budget_blocked"),
+                "lock": pending.get("lock")
+            }
+        )
+
+    async def _judge_message_complexity_with_meta(self, message: str) -> tuple:
         normalized = self._normalize_text(message)
+        
+        if self.config.get("enable_rule_prejudge", True):
+            pre, reason = self._rule_prejudge_detail(message)
+            if pre in ("HIGH", "FAST"):
+                self._stats_inc("judge_rule_hit")
+                return (pre, "rule", reason)
+        
         if self.config.get("enable_decision_cache", True) and normalized:
             cached = self._cache_get(self._decision_cache, f"decision:{normalized}")
             if cached in ("HIGH", "FAST"):
-                return cached
+                self._stats_inc("judge_cache_hit")
+                return (cached, "cache", "")
         
         judge_provider_id = self.config.get("judge_provider_id", "")
-        
         if not judge_provider_id:
-            # 没有配置判断模型,使用简单规则判断
             decision = self._simple_rule_judge(message)
-            return decision
+            return (decision, "fallback", "no_judge_provider")
         
-        # 获取判断模型提供商
         provider = self.context.get_provider_by_id(judge_provider_id)
         if not provider:
-            logger.warning(f"[JudgePlugin] 找不到判断模型提供商: {judge_provider_id},使用规则判断")
             decision = self._simple_rule_judge(message)
             if self.config.get("enable_decision_cache", True) and normalized:
                 self._cache_set(
@@ -528,18 +842,14 @@ $message
                     self.config.get("decision_cache_ttl_seconds", 600),
                     self.config.get("decision_cache_max_entries", 500)
                 )
-            return decision
+            return (decision, "fallback", "judge_provider_missing")
         
-        # 获取自定义提示词(如果有)
         custom_prompt = self.config.get("custom_judge_prompt", "")
         if custom_prompt and "$message" in custom_prompt:
-            # 使用 string.Template 安全替换,避免花括号注入
             prompt = Template(custom_prompt).safe_substitute(message=message)
         else:
-            # 使用默认模板
             prompt = self.judge_prompt_template.safe_substitute(message=message)
         
-        # 调用判断模型
         judge_model = self.config.get("judge_model", "")
         
         try:
@@ -551,17 +861,14 @@ $message
                 model_name=judge_model
             )
             
-            # 解析响应
             result_text = response.completion_text.strip().upper()
-            
             if "HIGH" in result_text:
                 decision = "HIGH"
             elif "FAST" in result_text:
                 decision = "FAST"
             else:
-                # 无法解析,使用规则判断
-                logger.warning(f"[JudgePlugin] 判断模型返回无法解析: {result_text}")
                 decision = self._simple_rule_judge(message)
+                return (decision, "fallback", "judge_unparseable")
             
             if self.config.get("enable_decision_cache", True) and normalized:
                 self._cache_set(
@@ -572,10 +879,9 @@ $message
                     self.config.get("decision_cache_max_entries", 500)
                 )
             
-            return decision
+            return (decision, "llm", "")
                 
-        except Exception as e:
-            logger.error(f"[JudgePlugin] 调用判断模型失败: {e}")
+        except Exception:
             decision = self._simple_rule_judge(message)
             if self.config.get("enable_decision_cache", True) and normalized:
                 self._cache_set(
@@ -585,7 +891,11 @@ $message
                     self.config.get("decision_cache_ttl_seconds", 600),
                     self.config.get("decision_cache_max_entries", 500)
                 )
-            return decision
+            return (decision, "fallback", "judge_error")
+    
+    async def _judge_message_complexity(self, message: str) -> str:
+        decision, _, _ = await self._judge_message_complexity_with_meta(message)
+        return decision
 
     def _simple_rule_judge(self, message: str) -> str:
         """
@@ -643,45 +953,10 @@ $message
         default_decision = self.config.get("default_decision", "FAST")
         return default_decision
 
-    def _should_process(self, event: AstrMessageEvent) -> bool:
-        """
-        检查是否应该处理该消息
-        
-        Args:
-            event: 消息事件
-            
-        Returns:
-            是否处理
-        """
-        # 获取白名单和黑名单
-        whitelist = self.config.get("whitelist", [])
-        blacklist = self.config.get("blacklist", [])
-        
-        # 获取会话标识
-        session_id = event.unified_msg_origin
-        group_id = event.get_group_id() if hasattr(event, 'get_group_id') else ""
-        sender_id = event.get_sender_id()
-        
-        # 如果有白名单,只处理白名单中的
-        if whitelist:
-            return (
-                session_id in whitelist or
-                group_id in whitelist or
-                sender_id in whitelist
-            )
-        
-        # 如果在黑名单中,不处理
-        if blacklist:
-            if (session_id in blacklist or
-                group_id in blacklist or
-                sender_id in blacklist):
-                return False
-        
-        return True
-
     async def _call_model_with_question(self, event: AstrMessageEvent, question: str, 
                                          provider_id: str, model_name: str, 
-                                         model_type: str, system_prompt: str):
+                                         model_type: str, system_prompt: str,
+                                         notice: str = ""):
         """统一的模型调用方法,减少代码重复
         
         Args:
@@ -724,6 +999,7 @@ $message
 🤖 提供商: {provider_id}
 📋 模型: {model_name or '默认'}
 ━━━━━━━━━━━━━━━━━━━━
+{notice + chr(10) if notice else ""}\
 {cached_answer}""")
                     return
             
@@ -755,6 +1031,7 @@ $message
 🤖 提供商: {provider_id}
 📋 模型: {model_name or '默认'}
 ━━━━━━━━━━━━━━━━━━━━
+{notice + chr(10) if notice else ""}\
 {answer}""")
             
         except Exception as e:
@@ -764,6 +1041,9 @@ $message
     @filter.command("judge_status")
     async def judge_status(self, event: AstrMessageEvent):
         """查看智能路由插件状态"""
+        if not self._is_command_allowed(event, "judge_status"):
+            yield event.plain_result("❌ 当前会话无权限使用该指令")
+            return
         enabled = self.config.get("enable", True)
         judge_provider = self.config.get("judge_provider_id", "未配置")
         high_iq_provider_ids = self.config.get("high_iq_provider_ids", [])
@@ -810,9 +1090,145 @@ $message
         
         yield event.plain_result(status_msg)
 
+    @filter.command("judge_stats")
+    async def judge_stats(self, event: AstrMessageEvent):
+        if not self._is_command_allowed(event, "judge_stats"):
+            yield event.plain_result("❌ 当前会话无权限使用该指令")
+            return
+        
+        router_total = int(self._stats_counters.get("router_total", 0) or 0)
+        router_high = int(self._stats_counters.get("router_decision_high", 0) or 0)
+        router_fast = int(self._stats_counters.get("router_decision_fast", 0) or 0)
+        use_high = int(self._stats_counters.get("router_use_high", 0) or 0)
+        use_fast = int(self._stats_counters.get("router_use_fast", 0) or 0)
+        budget_blocked = int(self._stats_counters.get("router_budget_blocked", 0) or 0)
+        
+        llm_ok = int(self._stats_counters.get("llm_ok", 0) or 0)
+        llm_err = int(self._stats_counters.get("llm_err", 0) or 0)
+        judge_rule_hit = int(self._stats_counters.get("judge_rule_hit", 0) or 0)
+        judge_cache_hit = int(self._stats_counters.get("judge_cache_hit", 0) or 0)
+        router_lock_used = int(self._stats_counters.get("router_lock_used", 0) or 0)
+        
+        total_llm = llm_ok + llm_err
+        ok_rate = (llm_ok / total_llm * 100) if total_llm else 0
+        
+        latencies = []
+        reason_count = {}
+        policy_count = {}
+        for r in self._stats_records:
+            if not isinstance(r, dict):
+                continue
+            if r.get("kind") == "llm":
+                ms = r.get("elapsed_ms")
+                if isinstance(ms, int) and ms >= 0:
+                    latencies.append(ms)
+                jr = r.get("judge_reason") or ""
+                if isinstance(jr, str) and jr:
+                    reason_count[jr] = reason_count.get(jr, 0) + 1
+                pol = r.get("policy") or ""
+                if isinstance(pol, str) and pol:
+                    policy_count[pol] = policy_count.get(pol, 0) + 1
+        
+        avg_ms = int(sum(latencies) / len(latencies)) if latencies else 0
+        p95_ms = 0
+        if latencies:
+            s = sorted(latencies)
+            idx = int(len(s) * 0.95) - 1
+            if idx < 0:
+                idx = 0
+            p95_ms = int(s[idx])
+        
+        top_reasons = sorted(reason_count.items(), key=lambda x: x[1], reverse=True)[:5]
+        top_policies = sorted(policy_count.items(), key=lambda x: x[1], reverse=True)[:5]
+        
+        def fmt_top(items):
+            if not items:
+                return "无"
+            return ", ".join([f"{k}({v})" for k, v in items])
+        
+        msg = f"""📈 Judge 统计(自启动以来)
+━━━━━━━━━━━━━━━━━━━━
+🧭 路由次数: {router_total}
+🔎 判定: HIGH={router_high}, FAST={router_fast}
+🎯 选用: HIGH={use_high}, FAST={use_fast}
+💰 预算拦截: {budget_blocked}
+🔒 锁定命中: {router_lock_used}
+━━━━━━━━━━━━━━━━━━━━
+🤖 LLM成功/失败: {llm_ok}/{llm_err} (成功率 {ok_rate:.1f}%)
+⏱️ 延迟: 平均 {avg_ms}ms, P95 {p95_ms}ms
+🧪 规则预判命中: {judge_rule_hit}
+🧠 决策缓存命中: {judge_cache_hit}
+━━━━━━━━━━━━━━━━━━━━
+🏷️ Top命中原因: {fmt_top(top_reasons)}
+🧩 Top策略: {fmt_top(top_policies)}"""
+        
+        yield event.plain_result(msg)
+
+    @filter.command("judge_lock", alias={"锁定", "lock"})
+    async def judge_lock(self, event: AstrMessageEvent):
+        if not self._is_command_allowed(event, "judge_lock"):
+            yield event.plain_result("❌ 当前会话无权限使用该指令")
+            return
+        
+        args = self._extract_command_args(event.message_str, ["judge_lock", "锁定", "lock"])
+        if not args:
+            yield event.plain_result("用法: /judge_lock [all|router|cmd] [HIGH|FAST] [轮数] [provider_id] [model]")
+            return
+        
+        tokens = args.split()
+        scope = "all"
+        if tokens and tokens[0].lower() in ("all", "router", "cmd"):
+            scope = tokens.pop(0).lower()
+        pool = ""
+        if tokens and tokens[0].upper() in ("HIGH", "FAST"):
+            pool = tokens.pop(0).upper()
+        turns = 5
+        if tokens:
+            try:
+                turns = int(tokens.pop(0))
+            except Exception:
+                turns = 5
+        provider_id = tokens.pop(0) if tokens else ""
+        model_name = tokens.pop(0) if tokens else ""
+        
+        ok = self._set_lock(event, scope, pool, turns, provider_id, model_name)
+        if not ok:
+            yield event.plain_result("❌ 锁定失败")
+            return
+        yield event.plain_result(f"✅ 已锁定: scope={scope}, pool={pool or '不限制'}, turns={turns}, provider={provider_id or '不限制'}, model={model_name or '默认'}")
+
+    @filter.command("judge_unlock", alias={"解锁", "unlock"})
+    async def judge_unlock(self, event: AstrMessageEvent):
+        if not self._is_command_allowed(event, "judge_unlock"):
+            yield event.plain_result("❌ 当前会话无权限使用该指令")
+            return
+        existed = self._clear_lock(event)
+        yield event.plain_result("✅ 已解锁" if existed else "当前会话未设置锁定")
+
+    @filter.command("judge_lock_status", alias={"锁定状态", "lock_status"})
+    async def judge_lock_status(self, event: AstrMessageEvent):
+        if not self._is_command_allowed(event, "judge_lock_status"):
+            yield event.plain_result("❌ 当前会话无权限使用该指令")
+            return
+        lock_router = self._get_lock(event, "router")
+        lock_cmd = self._get_lock(event, "cmd")
+        lock = lock_router or lock_cmd
+        if not lock:
+            yield event.plain_result("当前会话未设置锁定")
+            return
+        scope = lock.get("scope", "all")
+        pool = lock.get("pool", "") or "不限制"
+        turns = lock.get("turns", 0)
+        provider_id = lock.get("provider_id", "") or "不限制"
+        model = lock.get("model", "") or "默认"
+        yield event.plain_result(f"🔒 锁定状态: scope={scope}, pool={pool}, turns={turns}, provider={provider_id}, model={model}")
+
     @filter.command("judge_test")
     async def judge_test(self, event: AstrMessageEvent):
         """测试消息复杂度判断"""
+        if not self._is_command_allowed(event, "judge_test"):
+            yield event.plain_result("❌ 当前会话无权限使用该指令")
+            return
         # 使用辅助方法提取参数,支持动态前缀
         test_message = self._extract_command_args(event.message_str, ["judge_test"])
         
@@ -840,6 +1256,19 @@ $message
         用法: /ask_high 你的问题
         别名: /高智商, /deep, /大
         """
+        if not self._is_command_allowed(event, "ask_high"):
+            yield event.plain_result("❌ 当前会话无权限使用该指令")
+            return
+        policy = self._get_pool_policy(event)
+        notice = ""
+        if policy == "FAST_ONLY":
+            action = str(self.config.get("fast_only_action_for_high_cmd", "REJECT") or "REJECT").upper()
+            if action == "DOWNGRADE":
+                if self.config.get("enable_policy_notice", True):
+                    notice = "⚠️ 已按策略限制降级为快速模型"
+            else:
+                yield event.plain_result("❌ 当前会话仅允许使用快速模型")
+                return
         # 使用辅助方法提取参数,支持动态前缀
         question = self._extract_command_args(
             event.message_str, 
@@ -850,14 +1279,18 @@ $message
             yield event.plain_result("请提供问题,例如: /大 帮我分析一下这段代码的时间复杂度")
             return
         
-        # 获取高智商模型配置(从列表中随机选择)
-        provider_id, model_name = self._get_high_iq_provider_model()
+        desired_pool = "FAST" if policy == "FAST_ONLY" else "HIGH"
+        pool, policy, lock, provider_id, model_name = self._select_pool_and_provider(event, "cmd", desired_pool)
+        
+        model_type = "🧠 高智商模型" if pool == "HIGH" else "⚡ 快速模型"
+        system_prompt = "你是一个智能助手,请认真、详细地回答用户的问题。" if pool == "HIGH" else "你是一个智能助手,请简洁地回答用户的问题。"
         
         # 使用统一的调用方法
         async for result in self._call_model_with_question(
             event, question, provider_id, model_name,
-            "🧠 高智商模型",
-            "你是一个智能助手,请认真、详细地回答用户的问题。"
+            model_type,
+            system_prompt,
+            notice=notice
         ):
             yield result
 
@@ -868,6 +1301,19 @@ $message
         用法: /ask_fast 你的问题
         别名: /快速, /quick, /小
         """
+        if not self._is_command_allowed(event, "ask_fast"):
+            yield event.plain_result("❌ 当前会话无权限使用该指令")
+            return
+        policy = self._get_pool_policy(event)
+        notice = ""
+        if policy == "HIGH_ONLY":
+            action = str(self.config.get("high_only_action_for_fast_cmd", "REJECT") or "REJECT").upper()
+            if action == "DOWNGRADE":
+                if self.config.get("enable_policy_notice", True):
+                    notice = "⚠️ 已按策略限制升级为高智商模型"
+            else:
+                yield event.plain_result("❌ 当前会话仅允许使用高智商模型")
+                return
         # 使用辅助方法提取参数,支持动态前缀
         question = self._extract_command_args(
             event.message_str, 
@@ -878,14 +1324,18 @@ $message
             yield event.plain_result("请提供问题,例如: /小 今天天气怎么样")
             return
         
-        # 获取快速模型配置(从列表中随机选择)
-        provider_id, model_name = self._get_fast_provider_model()
+        desired_pool = "HIGH" if policy == "HIGH_ONLY" else "FAST"
+        pool, policy, lock, provider_id, model_name = self._select_pool_and_provider(event, "cmd", desired_pool)
+        
+        model_type = "🧠 高智商模型" if pool == "HIGH" else "⚡ 快速模型"
+        system_prompt = "你是一个智能助手,请认真、详细地回答用户的问题。" if pool == "HIGH" else "你是一个智能助手,请简洁地回答用户的问题。"
         
         # 使用统一的调用方法
         async for result in self._call_model_with_question(
             event, question, provider_id, model_name,
-            "⚡ 快速模型",
-            "你是一个智能助手,请简洁地回答用户的问题。"
+            model_type,
+            system_prompt,
+            notice=notice
         ):
             yield result
 
@@ -896,6 +1346,9 @@ $message
         用法: /ask_smart 你的问题
         别名: /智能问答, /smart, /问
         """
+        if not self._is_command_allowed(event, "ask_smart"):
+            yield event.plain_result("❌ 当前会话无权限使用该指令")
+            return
         # 使用辅助方法提取参数,支持动态前缀
         question = self._extract_command_args(
             event.message_str, 
@@ -908,20 +1361,40 @@ $message
         
         try:
             # 先判断复杂度
-            decision = await self._judge_message_complexity(question)
-            use_high_iq = decision == "HIGH" and self._budget_allows_high_iq(event)
+            decision, judge_source, judge_reason = await self._judge_message_complexity_with_meta(question)
+            desired_pool = "HIGH" if decision == "HIGH" else "FAST"
+            budget_blocked = False
+            if desired_pool == "HIGH" and not self._budget_allows_high_iq(event):
+                desired_pool = "FAST"
+                budget_blocked = True
+            
+            pool, policy, lock, provider_id, model_name = self._select_pool_and_provider(event, "cmd", desired_pool)
+            notice = ""
+            if self.config.get("enable_policy_notice", True):
+                if desired_pool != pool and policy == "FAST_ONLY":
+                    notice = "⚠️ 已按策略限制降级为快速模型"
+                elif desired_pool != pool and policy == "HIGH_ONLY":
+                    notice = "⚠️ 已按策略限制升级为高智商模型"
+            
             decision_display = decision
-            if decision == "HIGH" and not use_high_iq and self.config.get("enable_budget_control", False):
+            if decision in ("HIGH", "FAST") and judge_source:
+                tag = judge_source
+                if judge_reason:
+                    tag = f"{tag}:{judge_reason}"
+                decision_display = f"{decision} ({tag})"
+            if budget_blocked and self.config.get("enable_budget_control", False):
                 budget_mode = self._get_budget_mode(event)
                 ratio = self._get_high_iq_ratio(budget_mode)
-                decision_display = f"{decision} (预算:{budget_mode}/{ratio}%)"
+                decision_display = f"{decision_display} (预算:{budget_mode}/{ratio}%)"
+            if policy:
+                decision_display = f"{decision_display} (策略:{policy})"
+            if lock:
+                decision_display = f"{decision_display} (锁定)"
             
-            if use_high_iq:
-                provider_id, model_name = self._get_high_iq_provider_model()
+            if pool == "HIGH":
                 model_type = "🧠 高智商模型"
                 system_prompt = "你是一个智能助手,请认真、详细地回答用户的问题。"
             else:
-                provider_id, model_name = self._get_fast_provider_model()
                 model_type = "⚡ 快速模型"
                 system_prompt = "你是一个智能助手,请简洁地回答用户的问题。"
             
@@ -987,6 +1460,7 @@ $message
 🤖 提供商: {provider_id}
 📋 模型: {model_name or '默认'}
 ━━━━━━━━━━━━━━━━━━━━
+{notice + chr(10) if notice else ""}\
 {answer}""")
             
         except Exception as e:
@@ -999,6 +1473,9 @@ $message
         
         用法: /ping 或 /测试
         """
+        if not self._is_command_allowed(event, "ping"):
+            yield event.plain_result("❌ 当前会话无权限使用该指令")
+            return
         import time
         
         high_iq_provider_ids = self.config.get("high_iq_provider_ids", [])
