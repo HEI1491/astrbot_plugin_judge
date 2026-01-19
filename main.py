@@ -770,6 +770,7 @@ $message
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, resp):
+        """LLM 响应后打点统计(成功/失败、耗时、命中原因等)"""
         if not self.config.get("enable", True):
             return
         if not self.config.get("enable_stats", True):
@@ -1092,6 +1093,7 @@ $message
 
     @filter.command("judge_stats", alias={"统计", "stats"})
     async def judge_stats(self, event: AstrMessageEvent):
+        """查看路由与 LLM 统计面板(内存统计,重启清空)"""
         if not self._is_command_allowed(event, "judge_stats"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
             return
@@ -1166,6 +1168,7 @@ $message
 
     @filter.command("judge_lock", alias={"锁定", "lock", "锁", "锁模型"})
     async def judge_lock(self, event: AstrMessageEvent):
+        """临时锁定当前会话的模型池/提供商/模型(按轮数自动失效)"""
         if not self._is_command_allowed(event, "judge_lock"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
             return
@@ -1199,6 +1202,7 @@ $message
 
     @filter.command("judge_unlock", alias={"解锁", "unlock", "解"})
     async def judge_unlock(self, event: AstrMessageEvent):
+        """解除当前会话的临时锁定"""
         if not self._is_command_allowed(event, "judge_unlock"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
             return
@@ -1207,6 +1211,7 @@ $message
 
     @filter.command("judge_lock_status", alias={"锁定状态", "lock_status", "锁状态"})
     async def judge_lock_status(self, event: AstrMessageEvent):
+        """查看当前会话的锁定状态(剩余轮数/限制范围/指定提供商与模型)"""
         if not self._is_command_allowed(event, "judge_lock_status"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
             return
