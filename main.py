@@ -25,20 +25,38 @@ class JudgePlugin(Star):
         self._stats_records = []
         self._stats_counters = {}
         self._llm_pending = {}
+        self._provider_health = {}
+        self._circuit_breakers = {}
+        self._last_route = {}
         
-        # 判断提示词模板 - 使用 string.Template 避免花括号注入问题
-        self.judge_prompt_template = Template("""你是一个消息复杂度判断助手。请分析以下用户消息,判断它需要使用哪种模型来回答。
+        self.judge_prompt_template = Template("""你是一个“消息复杂度/成本-收益”分流器。目标是在满足用户需求的前提下尽量节省成本与时延：除非确实需要更强推理/更长上下文/更高准确性，否则优先选择 FAST。
 
-判断标准:
-- 【高智商模型】适用于:复杂推理、数学计算、代码编写、专业知识问答、长文本分析、创意写作、多步骤任务
-- 【快速模型】适用于:简单问候、闲聊、简单查询、是非问题、简短回复、日常对话
+你只做二选一分类：HIGH 或 FAST。不要输出解释、标点、空格或换行。
 
-用户消息:
+## 判定目标
+- HIGH：任务对推理深度、正确性、稳定性、长上下文、复杂结构化输出有明显要求，FAST 高概率给出错误/不完整/不可靠结果。
+- FAST：可以用简短直接回答解决；或即使略有不精确也不影响体验；或可用简单规则/常识完成。
+
+## 关键判断维度（满足任意一条通常选 HIGH）
+1) 多步推理：需要严谨推导、证明、复杂逻辑链、反例讨论、细致方案权衡。
+2) 数学/算法/代码：编程实现、调试、复杂算法、SQL/正则、性能分析、边界条件多。
+3) 长文本/多要点：需要总结/对比/归纳长内容，或输出结构化清单且要覆盖全面。
+4) 专业/高风险：医疗/法律/金融/安全等对准确性要求高，或需要谨慎措辞与推断。
+5) 明确要求“详细/深入/步骤/举例/证明/推导/完整代码/测试用例/鲁棒性”等。
+
+## 典型 FAST 场景（满足任意一条通常选 FAST）
+- 问候/闲聊/情绪安抚/短句翻译/简短定义解释。
+- 单一事实或简单是非判断（不要求严谨推导）。
+- 简单改写、润色、生成短回复、轻量总结（文本不长）。
+- 用户问题很短且没有“深入/详细/步骤/代码/推导”等要求。
+
+## 边界处理
+- 不确定时默认 FAST，除非用户明确要求高质量/详细推理/代码/数学等。
+
+用户消息如下：
 $message
 
-请只回复一个词:HIGH 或 FAST
-- HIGH 表示需要高智商模型
-- FAST 表示使用快速模型即可""")
+最终输出（仅一个词）：HIGH 或 FAST""")
 
     def _get_provider_model_pair(self, provider_ids, model_names) -> tuple:
         """从提供商列表和模型列表中随机选择一对
@@ -189,6 +207,14 @@ $message
         except Exception:
             return 0
     
+    def _render_bar(self, current: int, total: int, width: int = 10) -> str:
+        """渲染进度条"""
+        if total <= 0:
+            return "░" * width
+        percentage = min(max(current / total, 0), 1)
+        filled = int(percentage * width)
+        return "▓" * filled + "░" * (width - filled)
+
     def _get_budget_mode(self, event: AstrMessageEvent) -> str:
         default_mode = str(self.config.get("budget_mode", "BALANCED") or "BALANCED").upper()
         if default_mode not in ("ECONOMY", "BALANCED", "FLAGSHIP"):
@@ -450,7 +476,112 @@ $message
                 provider_id, model_name = self._get_high_iq_provider_model()
             else:
                 provider_id, model_name = self._get_fast_provider_model()
-        return (pool, policy, lock, provider_id, model_name)
+        
+        meta = {
+            "cb_skipped": False,
+            "cb_pool_fallback": False,
+            "original_provider_id": provider_id,
+            "original_model": model_name
+        }
+        circuit_breaker_enabled = bool(self.config.get("enable_circuit_breaker", True))
+        if circuit_breaker_enabled and provider_id and not (lock and lock.get("provider_id")):
+            if self._is_provider_temporarily_disabled(provider_id):
+                self._stats_inc("router_cb_skip")
+                meta["cb_skipped"] = True
+                fallback_provider_id, fallback_model = self._get_available_provider_model(pool, exclude_provider_id=provider_id)
+                if fallback_provider_id:
+                    provider_id = fallback_provider_id
+                    model_name = fallback_model
+                else:
+                    allow_pool_fallback = bool(self.config.get("enable_auto_fallback", True))
+                    if allow_pool_fallback and not policy:
+                        other_pool = "FAST" if pool == "HIGH" else "HIGH"
+                        other_provider_id, other_model = self._get_available_provider_model(other_pool, exclude_provider_id="")
+                        if other_provider_id:
+                            pool = other_pool
+                            provider_id = other_provider_id
+                            model_name = other_model
+                            meta["cb_pool_fallback"] = True
+        return (pool, policy, lock, provider_id, model_name, meta)
+
+    def _get_pool_pairs(self, pool: str) -> list:
+        pool = (pool or "").upper()
+        if pool == "HIGH":
+            provider_ids = self.config.get("high_iq_provider_ids", [])
+            model_names = self.config.get("high_iq_models", [])
+        else:
+            provider_ids = self.config.get("fast_provider_ids", [])
+            model_names = self.config.get("fast_models", [])
+        if not isinstance(provider_ids, list) or not provider_ids:
+            return []
+        pairs = []
+        for i, provider_id in enumerate(provider_ids):
+            if not provider_id:
+                continue
+            model_name = ""
+            if isinstance(model_names, list) and i < len(model_names):
+                model_name = model_names[i] or ""
+            pairs.append((str(provider_id), str(model_name)))
+        return pairs
+
+    def _is_provider_temporarily_disabled(self, provider_id: str, model_name: str = "") -> bool:
+        if not provider_id:
+            return False
+        key = f"{provider_id}:{model_name}"
+        cb = self._circuit_breakers.get(key)
+        if not cb:
+             # Fallback to check if provider itself is marked down (without model)
+             # But we primarily use full keys. 
+             return False
+        
+        if cb.get("state") != "open":
+            return False
+            
+        # Check cooldown (e.g. 60 seconds)
+        last_fail = float(cb.get("last_fail", 0) or 0)
+        if self._now_ts() - last_fail > 60:
+            # Cooldown passed, allow retry (Half-Open logic simplified)
+            return False
+            
+        return True
+
+    def _get_available_provider_model(self, pool: str, exclude_provider_id: str = "") -> tuple:
+        pairs = self._get_pool_pairs(pool)
+        if not pairs:
+            return ("", "")
+        exclude_provider_id = str(exclude_provider_id or "")
+        
+        # Shuffle to distribute load
+        random.shuffle(pairs)
+        
+        for pid, model in pairs:
+            if exclude_provider_id and pid == exclude_provider_id:
+                continue
+            if not self._is_provider_temporarily_disabled(pid, model):
+                return (pid, model)
+        return ("", "")
+
+    def _update_circuit_breaker(self, provider_id: str, model: str, ok: bool):
+        if not provider_id:
+            return
+        key = f"{provider_id}:{model}"
+        
+        if ok:
+             if key in self._circuit_breakers:
+                 self._circuit_breakers.pop(key, None)
+        else:
+             cb = self._circuit_breakers.get(key)
+             if not cb:
+                 cb = {"fail_count": 0, "state": "closed", "last_fail": 0}
+             
+             cb["fail_count"] = cb.get("fail_count", 0) + 1
+             cb["last_fail"] = self._now_ts()
+             
+             # Threshold: 3 failures
+             if cb["fail_count"] >= 3:
+                 cb["state"] = "open"
+                 
+             self._circuit_breakers[key] = cb
     
     def _stats_inc(self, key: str, delta: int = 1):
         if not self.config.get("enable_stats", True):
@@ -693,35 +824,14 @@ $message
         try:
             decision, judge_source, judge_reason = await self._judge_message_complexity_with_meta(user_message)
             
-            desired_pool = "HIGH" if decision == "HIGH" else "FAST"
+            base_pool = "HIGH" if decision == "HIGH" else "FAST"
+            desired_pool = base_pool
             budget_blocked = False
             if desired_pool == "HIGH" and not self._budget_allows_high_iq(event):
                 desired_pool = "FAST"
                 budget_blocked = True
-            
-            policy = self._get_pool_policy(event)
-            if policy == "FAST_ONLY":
-                desired_pool = "FAST"
-            elif policy == "HIGH_ONLY":
-                desired_pool = "HIGH"
-            
-            lock = self._consume_lock(event, "router")
-            if lock and lock.get("pool"):
-                lock_pool = str(lock.get("pool")).upper()
-                if policy != "FAST_ONLY" or lock_pool != "HIGH":
-                    if policy != "HIGH_ONLY" or lock_pool != "FAST":
-                        desired_pool = lock_pool
-            
-            provider_id = ""
-            model_name = ""
-            if lock and lock.get("provider_id"):
-                provider_id = str(lock.get("provider_id") or "")
-                model_name = str(lock.get("model") or "")
-            else:
-                if desired_pool == "HIGH":
-                    provider_id, model_name = self._get_high_iq_provider_model()
-                else:
-                    provider_id, model_name = self._get_fast_provider_model()
+
+            pool, policy, lock, provider_id, model_name, route_meta = self._select_pool_and_provider(event, "router", desired_pool)
             
             if provider_id:
                 req.provider_id = provider_id
@@ -743,6 +853,36 @@ $message
                 self._stats_inc(f"router_policy_{policy.lower()}")
             if lock:
                 self._stats_inc("router_lock_used")
+            if route_meta and route_meta.get("cb_pool_fallback"):
+                self._stats_inc("router_cb_pool_fallback")
+            if pool != desired_pool:
+                self._stats_inc("router_pool_changed")
+
+            try:
+                sk = self._session_key(event)
+                if sk:
+                    self._last_route[sk] = {
+                        "ts": self._now_ts(),
+                        "scope": "router",
+                        "message": user_message[:200],
+                        "decision": decision,
+                        "judge_source": judge_source,
+                        "judge_reason": judge_reason,
+                        "base_pool": base_pool,
+                        "desired_pool": desired_pool,
+                        "final_pool": pool,
+                        "policy": policy,
+                        "budget_blocked": budget_blocked,
+                        "lock": True if lock else False,
+                        "provider_id": provider_id,
+                        "model": model_name,
+                        "cb_skipped": True if (route_meta and route_meta.get("cb_skipped")) else False,
+                        "cb_pool_fallback": True if (route_meta and route_meta.get("cb_pool_fallback")) else False,
+                        "original_provider_id": (route_meta or {}).get("original_provider_id", ""),
+                        "original_model": (route_meta or {}).get("original_model", "")
+                    }
+            except Exception:
+                pass
             
             msg_obj = getattr(event, "message_obj", None)
             msg_id = getattr(msg_obj, "message_id", "") if msg_obj else ""
@@ -754,12 +894,14 @@ $message
                         "decision": decision,
                         "judge_source": judge_source,
                         "judge_reason": judge_reason,
-                        "pool": desired_pool,
+                        "pool": pool,
                         "provider_id": provider_id,
                         "model": model_name,
                         "policy": policy,
                         "budget_blocked": budget_blocked,
-                        "lock": True if lock else False
+                        "lock": True if lock else False,
+                        "cb_skipped": True if (route_meta and route_meta.get("cb_skipped")) else False,
+                        "cb_pool_fallback": True if (route_meta and route_meta.get("cb_pool_fallback")) else False
                     }
                 except Exception:
                     pass
@@ -789,6 +931,10 @@ $message
             elapsed_ms = 0
         role = str(getattr(resp, "role", "") or "")
         ok = role != "err"
+        try:
+            self._update_circuit_breaker(str(pending.get("provider_id") or ""), str(pending.get("model") or ""), ok)
+        except Exception:
+            pass
         if ok:
             self._stats_inc("llm_ok")
         else:
@@ -808,7 +954,9 @@ $message
                 "model": pending.get("model"),
                 "policy": pending.get("policy"),
                 "budget_blocked": pending.get("budget_blocked"),
-                "lock": pending.get("lock")
+                "lock": pending.get("lock"),
+                "cb_skipped": pending.get("cb_skipped"),
+                "cb_pool_fallback": pending.get("cb_pool_fallback")
             }
         )
 
@@ -858,7 +1006,7 @@ $message
                 provider,
                 prompt=prompt,
                 context_messages=[],
-                system_prompt="你是一个消息复杂度判断助手,只回复 HIGH 或 FAST。",
+                system_prompt="你是一个消息复杂度判断助手。只输出 HIGH 或 FAST，不要输出任何解释、标点、空格或换行。",
                 model_name=judge_model
             )
             
@@ -1041,130 +1189,131 @@ $message
 
     @filter.command("judge_status", alias={"状态", "status"})
     async def judge_status(self, event: AstrMessageEvent):
-        """查看智能路由插件状态"""
+        """查看插件配置与运行状态"""
         if not self._is_command_allowed(event, "judge_status"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
             return
-        enabled = self.config.get("enable", True)
-        judge_provider = self.config.get("judge_provider_id", "未配置")
-        high_iq_provider_ids = self.config.get("high_iq_provider_ids", [])
-        high_iq_models = self.config.get("high_iq_models", [])
-        high_iq_polling_enabled = self.config.get("enable_high_iq_polling", True)
-        fast_provider_ids = self.config.get("fast_provider_ids", [])
-        fast_models = self.config.get("fast_models", [])
+            
+        c = self.config
         
-        # 构建高智商模型信息
-        high_iq_info = []
-        for i, pid in enumerate(high_iq_provider_ids):
-            model = high_iq_models[i] if i < len(high_iq_models) else "默认"
-            high_iq_info.append(f"  • {pid} ({model})")
+        # 辅助图标
+        on_icon = "✅"
+        off_icon = "⚪"
         
-        # 构建快速模型信息
-        fast_info = []
-        for i, pid in enumerate(fast_provider_ids):
-            model = fast_models[i] if i < len(fast_models) else "默认"
-            fast_info.append(f"  • {pid} ({model})")
+        def _bool_icon(val):
+            return on_icon if val else off_icon
+
+        # 预算模式
+        budget_mode = c.get("budget_mode", "BALANCED")
+        high_iq_ratio = self._get_high_iq_ratio(budget_mode)
         
-        enable_budget_control = self.config.get("enable_budget_control", False)
-        budget_mode = self._get_budget_mode(event)
-        budget_ratio = self._get_high_iq_ratio(budget_mode)
-        enable_rule_prejudge = self.config.get("enable_rule_prejudge", True)
-        enable_decision_cache = self.config.get("enable_decision_cache", True)
-        decision_cache_ttl = self.config.get("decision_cache_ttl_seconds", 600)
-        enable_answer_cache = self.config.get("enable_answer_cache", False)
+        lines = [
+            "🧩 **Judge 插件状态**",
+            "━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"{_bool_icon(c.get('enable', True))} **主开关**",
+            "",
+            "⚙️ **功能模块**",
+            f"├─ {_bool_icon(c.get('enable_high_iq_polling', True))} 高智商轮询",
+            f"├─ {_bool_icon(c.get('enable_rule_prejudge', True))} 规则预判",
+            f"├─ {_bool_icon(c.get('enable_decision_cache', True))} 决策缓存",
+            f"├─ {_bool_icon(c.get('enable_answer_cache', True))} 答案缓存",
+            f"├─ {_bool_icon(c.get('enable_stats', True))} 统计面板",
+            f"└─ {_bool_icon(c.get('enable_session_lock', True))} 会话锁定",
+            "",
+            "� **预算控制**",
+            f"├─ 状态: {_bool_icon(c.get('enable_budget_control', False))}",
+            f"├─ 模式: `{budget_mode}`",
+            f"└─ 触发率: `{high_iq_ratio}%`",
+            "",
+            "🤖 **模型池配置**",
+            f"├─ Judge: `{c.get('judge_provider_id', '未配置')}`",
+            f"├─ High: {len(c.get('high_iq_provider_ids', []))} 个提供商",
+            f"└─ Fast: {len(c.get('fast_provider_ids', []))} 个提供商",
+            "",
+            "🛡️ **策略与限制**",
+            f"├─ 路由黑白名单: {len(c.get('router_whitelist', []))} / {len(c.get('router_blacklist', []))}",
+            f"└─ 仅快/仅高策略: {len(c.get('fast_only_list', []))} / {len(c.get('high_only_list', []))}",
+        ]
         
-        status_msg = f"""📊 智能路由判断插件状态
-━━━━━━━━━━━━━━━━━━━━
-🔌 插件状态: {"✅ 已启用" if enabled else "❌ 已禁用"}
-🧠 判断模型提供商: {judge_provider}
-🔁 高智商模型轮询: {"✅ 启用" if high_iq_polling_enabled else "❌ 关闭"}
-💰 预算控制: {"✅ 启用" if enable_budget_control else "❌ 关闭"} ({budget_mode}/{budget_ratio}%)
-🧪 规则预判: {"✅ 启用" if enable_rule_prejudge else "❌ 关闭"}
-🧠 决策缓存: {"✅ 启用" if enable_decision_cache else "❌ 关闭"} (TTL={decision_cache_ttl}s)
-📦 回答缓存: {"✅ 启用" if enable_answer_cache else "❌ 关闭"}
-🎯 高智商模型提供商 ({len(high_iq_provider_ids)}个):
-{chr(10).join(high_iq_info) if high_iq_info else "  未配置"}
-⚡ 快速模型提供商 ({len(fast_provider_ids)}个):
-{chr(10).join(fast_info) if fast_info else "  未配置"}
-━━━━━━━━━━━━━━━━━━━━
-注: 快速模型随机选择;高智商模型可随机选择(可关闭)"""
-        
-        yield event.plain_result(status_msg)
+        yield event.plain_result("\n".join(lines))
 
     @filter.command("judge_stats", alias={"统计", "stats"})
     async def judge_stats(self, event: AstrMessageEvent):
-        """查看路由与 LLM 统计面板(内存统计,重启清空)"""
+        """查看详细的路由与LLM统计面板"""
         if not self._is_command_allowed(event, "judge_stats"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
             return
         
-        router_total = int(self._stats_counters.get("router_total", 0) or 0)
-        router_high = int(self._stats_counters.get("router_decision_high", 0) or 0)
-        router_fast = int(self._stats_counters.get("router_decision_fast", 0) or 0)
-        use_high = int(self._stats_counters.get("router_use_high", 0) or 0)
-        use_fast = int(self._stats_counters.get("router_use_fast", 0) or 0)
-        budget_blocked = int(self._stats_counters.get("router_budget_blocked", 0) or 0)
+        if not self.config.get("enable_stats", True):
+            yield event.plain_result("⚠️ 统计功能未开启")
+            return
+            
+        cnt = self._stats_counters
+        total_router = cnt.get("router_total", 0)
         
-        llm_ok = int(self._stats_counters.get("llm_ok", 0) or 0)
-        llm_err = int(self._stats_counters.get("llm_err", 0) or 0)
-        judge_rule_hit = int(self._stats_counters.get("judge_rule_hit", 0) or 0)
-        judge_cache_hit = int(self._stats_counters.get("judge_cache_hit", 0) or 0)
-        router_lock_used = int(self._stats_counters.get("router_lock_used", 0) or 0)
+        lines = ["📊 **AstrBot 路由统计**", "━━━━━━━━━━━━━━━━━━━━━━━━"]
         
-        total_llm = llm_ok + llm_err
-        ok_rate = (llm_ok / total_llm * 100) if total_llm else 0
+        # 1. 概览
+        lines.append(f"🔢 **总请求**: `{total_router}` 次")
         
-        latencies = []
-        reason_count = {}
-        policy_count = {}
-        for r in self._stats_records:
-            if not isinstance(r, dict):
-                continue
-            if r.get("kind") == "llm":
-                ms = r.get("elapsed_ms")
-                if isinstance(ms, int) and ms >= 0:
-                    latencies.append(ms)
-                jr = r.get("judge_reason") or ""
-                if isinstance(jr, str) and jr:
-                    reason_count[jr] = reason_count.get(jr, 0) + 1
-                pol = r.get("policy") or ""
-                if isinstance(pol, str) and pol:
-                    policy_count[pol] = policy_count.get(pol, 0) + 1
+        # 2. 决策分布 (进度条)
+        high_dec = cnt.get("router_decision_high", 0)
+        fast_dec = cnt.get("router_decision_fast", 0)
+        dec_total = high_dec + fast_dec
         
-        avg_ms = int(sum(latencies) / len(latencies)) if latencies else 0
-        p95_ms = 0
-        if latencies:
-            s = sorted(latencies)
-            idx = int(len(s) * 0.95) - 1
-            if idx < 0:
-                idx = 0
-            p95_ms = int(s[idx])
+        if dec_total > 0:
+            lines.append("")
+            lines.append("📈 **决策分布**:")
+            lines.append(f"HIGH: {self._render_bar(high_dec, dec_total)} {int(high_dec/dec_total*100)}%")
+            lines.append(f"FAST: {self._render_bar(fast_dec, dec_total)} {int(fast_dec/dec_total*100)}%")
+            
+        # 3. 实际执行 (进度条)
+        high_use = cnt.get("router_use_high", 0)
+        fast_use = cnt.get("router_use_fast", 0)
+        use_total = high_use + fast_use
         
-        top_reasons = sorted(reason_count.items(), key=lambda x: x[1], reverse=True)[:5]
-        top_policies = sorted(policy_count.items(), key=lambda x: x[1], reverse=True)[:5]
+        if use_total > 0:
+            lines.append("")
+            lines.append("🚀 **实际执行**:")
+            lines.append(f"HIGH: {self._render_bar(high_use, use_total)} {int(high_use/use_total*100)}%")
+            lines.append(f"FAST: {self._render_bar(fast_use, use_total)} {int(fast_use/use_total*100)}%")
+
+        # 4. LLM 表现
+        llm_ok = cnt.get("llm_ok", 0)
+        llm_err = cnt.get("llm_err", 0)
+        llm_total = llm_ok + llm_err
         
-        def fmt_top(items):
-            if not items:
-                return "无"
-            return ", ".join([f"{k}({v})" for k, v in items])
-        
-        msg = f"""📈 Judge 统计(自启动以来)
-━━━━━━━━━━━━━━━━━━━━
-🧭 路由次数: {router_total}
-🔎 判定: HIGH={router_high}, FAST={router_fast}
-🎯 选用: HIGH={use_high}, FAST={use_fast}
-💰 预算拦截: {budget_blocked}
-🔒 锁定命中: {router_lock_used}
-━━━━━━━━━━━━━━━━━━━━
-🤖 LLM成功/失败: {llm_ok}/{llm_err} (成功率 {ok_rate:.1f}%)
-⏱️ 延迟: 平均 {avg_ms}ms, P95 {p95_ms}ms
-🧪 规则预判命中: {judge_rule_hit}
-🧠 决策缓存命中: {judge_cache_hit}
-━━━━━━━━━━━━━━━━━━━━
-🏷️ Top命中原因: {fmt_top(top_reasons)}
-🧩 Top策略: {fmt_top(top_policies)}"""
-        
-        yield event.plain_result(msg)
+        if llm_total > 0:
+            lines.append("")
+            lines.append(f"⚡ **LLM 成功率**: `{int(llm_ok/llm_total*100)}%` ({llm_err} 失败)")
+            
+            # 计算平均耗时
+            records = self._stats_records
+            latencies = [r.get("elapsed_ms", 0) for r in records if r.get("elapsed_ms", 0) > 0]
+            if latencies:
+                avg_lat = sum(latencies) / len(latencies)
+                max_lat = max(latencies)
+                lines.append(f"⏱️ **延迟**: Avg `{int(avg_lat)}ms` | Max `{int(max_lat)}ms`")
+                
+        # 5. Top 命中原因
+        records = self._stats_records
+        if records:
+            from collections import Counter
+            reasons = [f"{r.get('judge_source')}:{r.get('judge_reason')}" for r in records if r.get('judge_source')]
+            if reasons:
+                top = Counter(reasons).most_common(3)
+                lines.append("")
+                lines.append("🏆 **Top 命中策略**:")
+                for k, v in top:
+                    lines.append(f"  • `{k}`: {v} 次")
+
+        # 6. 拦截统计
+        blocked = cnt.get("router_budget_blocked", 0)
+        if blocked > 0:
+            lines.append("")
+            lines.append(f"💰 **预算拦截**: `{blocked}` 次")
+            
+        yield event.plain_result("\n".join(lines))
 
     @filter.command("judge_lock", alias={"锁定", "lock", "锁", "锁模型"})
     async def judge_lock(self, event: AstrMessageEvent):
@@ -1219,14 +1368,24 @@ $message
         lock_cmd = self._get_lock(event, "cmd")
         lock = lock_router or lock_cmd
         if not lock:
-            yield event.plain_result("当前会话未设置锁定")
+            yield event.plain_result("🔓 当前会话未设置锁定")
             return
-        scope = lock.get("scope", "all")
-        pool = lock.get("pool", "") or "不限制"
-        turns = lock.get("turns", 0)
-        provider_id = lock.get("provider_id", "") or "不限制"
-        model = lock.get("model", "") or "默认"
-        yield event.plain_result(f"🔒 锁定状态: scope={scope}, pool={pool}, turns={turns}, provider={provider_id}, model={model}")
+            
+        import datetime
+        expires_at = lock.get("expires_at", 0)
+        remaining = max(0, int(expires_at - self._now_ts()))
+        
+        lines = [
+            "🔒 **会话锁定生效中**",
+            "━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"🎯 **Scope**: `{lock.get('scope', 'all')}`",
+            f"🏊 **Pool**: `{lock.get('pool') or '不限制'}`",
+            f"🔢 **剩余轮数**: `{lock.get('turns', 0)}`",
+            f"⏳ **自动过期**: `{remaining}s`",
+            f"🤖 **Provider**: `{lock.get('provider_id') or '不限制'}`",
+            f"📋 **Model**: `{lock.get('model') or '默认'}`"
+        ]
+        yield event.plain_result("\n".join(lines))
 
     @filter.command("judge_test", alias={"判定"})
     async def judge_test(self, event: AstrMessageEvent):
@@ -1242,15 +1401,21 @@ $message
             return
         
         try:
-            decision = await self._judge_message_complexity(test_message)
+            decision, source, reason = await self._judge_message_complexity_with_meta(test_message)
             model_type = "🧠 高智商模型" if decision == "HIGH" else "⚡ 快速模型"
             
-            yield event.plain_result(f"""🔍 消息复杂度判断测试
-━━━━━━━━━━━━━━━━━━━━
-📝 测试消息: {test_message[:50]}{"..." if len(test_message) > 50 else ""}
-📊 判断结果: {decision}
-🎯 推荐模型类型: {model_type}
-━━━━━━━━━━━━━━━━━━━━""")
+            lines = [
+                "🔍 **消息复杂度判断测试**",
+                "━━━━━━━━━━━━━━━━━━━━━━━━",
+                f"📝 **消息**: {test_message[:50]}{'...' if len(test_message)>50 else ''}",
+                "",
+                f"📊 **结果**: `{decision}`",
+                f"💡 **来源**: `{source}`",
+                f"🧐 **原因**: `{reason}`",
+                f"🎯 **推荐**: {model_type}",
+                "━━━━━━━━━━━━━━━━━━━━━━━━"
+            ]
+            yield event.plain_result("\n".join(lines))
         except Exception as e:
             yield event.plain_result(f"测试失败: {e}")
 
@@ -1472,94 +1637,164 @@ $message
             logger.error(f"[JudgePlugin] 智能问答调用失败: {e}")
             yield event.plain_result(f"❌ 调用失败: {e}")
 
-    @filter.command("ping", alias={"测试", "test_llm"})
-    async def ping_llm(self, event: AstrMessageEvent):
-        """测试LLM模型是否活跃(测试所有配置的提供商)
-        
-        用法: /ping 或 /测试
-        """
-        if not self._is_command_allowed(event, "ping"):
+    @filter.command("judge_health", alias={"ping", "health", "测试", "test_llm", "健康"})
+    async def judge_health(self, event: AstrMessageEvent):
+        """查看LLM提供商健康度与断路器状态"""
+        if not self._is_command_allowed(event, "judge_health"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
             return
+            
+        yield event.plain_result("🏥 正在进行全量健康检查...")
+        
         import time
-        
-        high_iq_provider_ids = self.config.get("high_iq_provider_ids", [])
-        high_iq_models = self.config.get("high_iq_models", [])
-        fast_provider_ids = self.config.get("fast_provider_ids", [])
-        fast_models = self.config.get("fast_models", [])
-        
         results = []
-        total = len(high_iq_provider_ids) + len(fast_provider_ids)
         
-        if total == 0:
-            yield event.plain_result("❌ 未配置任何模型提供商")
+        # 收集所有需要检查的 (provider_id, model_name)
+        targets = []
+        
+        judge_pid = self.config.get("judge_provider_id", "")
+        if judge_pid:
+            targets.append(("JUDGE", judge_pid, self.config.get("judge_model", "")))
+            
+        high_pids = self.config.get("high_iq_provider_ids", [])
+        high_models = self.config.get("high_iq_models", [])
+        for i, pid in enumerate(high_pids):
+            m = high_models[i] if i < len(high_models) else ""
+            targets.append(("HIGH", pid, m))
+            
+        fast_pids = self.config.get("fast_provider_ids", [])
+        fast_models = self.config.get("fast_models", [])
+        for i, pid in enumerate(fast_pids):
+            m = fast_models[i] if i < len(fast_models) else ""
+            targets.append(("FAST", pid, m))
+            
+        if not targets:
+            yield event.plain_result("⚠️ 未配置任何模型提供商")
             return
+
+        # 去重
+        unique_targets = {}
+        for tag, pid, model in targets:
+            key = (pid, model)
+            if key not in unique_targets:
+                unique_targets[key] = []
+            unique_targets[key].append(tag)
+            
+        output_lines = ["🏥 **LLM 健康度报告**", "━━━━━━━━━━━━━━━━━━━━━━━━"]
         
-        yield event.plain_result(f"🔄 正在测试 {total} 个提供商,请稍候...")
-        
-        # 测试高智商模型列表
-        if high_iq_provider_ids:
-            results.append(f"🧠 高智商模型提供商 ({len(high_iq_provider_ids)}个):")
-            for i, provider_id in enumerate(high_iq_provider_ids):
-                model_name = high_iq_models[i] if i < len(high_iq_models) else ""
-                provider = self.context.get_provider_by_id(provider_id)
+        for (pid, model), tags in unique_targets.items():
+            provider = self.context.get_provider_by_id(pid)
+            model_disp = model if model else "默认"
+            tags_disp = " ".join([f"`{t}`" for t in tags])
+            
+            if not provider:
+                output_lines.append(f"🔴 **{pid}** ({model_disp})")
+                output_lines.append(f"   └─ 🏷️ {tags_disp} | ❌ 提供商不存在")
+                continue
                 
-                if not provider:
-                    results.append(f"  ├─ {provider_id}: ❌ 提供商不存在")
-                    continue
-                    
-                try:
-                    start_time = time.time()
-                    response = await self._provider_text_chat(
-                        provider,
-                        prompt="请回复:OK",
-                        context_messages=[],
-                        system_prompt="只回复OK两个字母",
-                        model_name=model_name
-                    )
-                    elapsed = time.time() - start_time
-                    display_model = model_name if model_name else "默认"
-                    results.append(f"  ├─ {provider_id} ({display_model}): ✅ 活跃 ({elapsed:.2f}s)")
-                except Exception as e:
-                    display_model = model_name if model_name else "默认"
-                    results.append(f"  ├─ {provider_id} ({display_model}): ❌ 失败 - {str(e)[:30]}")
-        else:
-            results.append("🧠 高智商模型: ⚠️ 未配置")
-        
-        # 测试快速模型列表
-        if fast_provider_ids:
-            results.append(f"⚡ 快速模型提供商 ({len(fast_provider_ids)}个):")
-            for i, provider_id in enumerate(fast_provider_ids):
-                model_name = fast_models[i] if i < len(fast_models) else ""
-                provider = self.context.get_provider_by_id(provider_id)
+            # 检查断路器状态
+            cb_key = f"{pid}:{model}"
+            cb = self._circuit_breakers.get(cb_key, {})
+            is_open = cb.get("state") == "open"
+            fail_count = cb.get("fail_count", 0)
+            
+            status_icon = "🟢"
+            status_text = "正常"
+            latency_text = "-"
+            
+            try:
+                t0 = time.time()
+                await self._provider_text_chat(
+                    provider,
+                    prompt="OK",
+                    context_messages=[],
+                    system_prompt="Reply OK",
+                    model_name=model
+                )
+                latency = time.time() - t0
+                latency_text = f"{latency:.2f}s"
                 
-                if not provider:
-                    results.append(f"  ├─ {provider_id}: ❌ 提供商不存在")
-                    continue
+                # 更新断路器为关闭(成功)
+                if is_open:
+                    status_icon = "🟡" 
+                    status_text = "恢复中"
+                    self._circuit_breakers[cb_key] = {"state": "closed", "fail_count": 0, "last_fail": 0}
+                else:
+                    self._circuit_breakers[cb_key] = {"state": "closed", "fail_count": 0, "last_fail": 0}
                     
-                try:
-                    start_time = time.time()
-                    response = await self._provider_text_chat(
-                        provider,
-                        prompt="请回复:OK",
-                        context_messages=[],
-                        system_prompt="只回复OK两个字母",
-                        model_name=model_name
-                    )
-                    elapsed = time.time() - start_time
-                    display_model = model_name if model_name else "默认"
-                    results.append(f"  ├─ {provider_id} ({display_model}): ✅ 活跃 ({elapsed:.2f}s)")
-                except Exception as e:
-                    display_model = model_name if model_name else "默认"
-                    results.append(f"  ├─ {provider_id} ({display_model}): ❌ 失败 - {str(e)[:30]}")
-        else:
-            results.append("⚡ 快速模型: ⚠️ 未配置")
+            except Exception as e:
+                status_icon = "🔴"
+                status_text = f"失败: {str(e)[:15]}..."
+                
+                # 更新断路器计数
+                now = time.time()
+                new_fail = fail_count + 1
+                state = "open" if new_fail >= 3 else "closed" # 简单阈值
+                self._circuit_breakers[cb_key] = {
+                    "state": state,
+                    "fail_count": new_fail,
+                    "last_fail": now
+                }
+                if state == "open":
+                    status_icon = "🚫"
+                    status_text = "已熔断"
+
+            output_lines.append(f"{status_icon} **{pid}** ({model_disp})")
+            output_lines.append(f"   └─ 🏷️ {tags_disp} | ⏱️ {latency_text} | 📊 {status_text}")
+
+        yield event.plain_result("\n".join(output_lines))
+
+    @filter.command("judge_explain", alias={"解释", "explain", "路由解释"})
+    async def judge_explain(self, event: AstrMessageEvent):
+        """解释最近一次路由决策的依据"""
+        if not self._is_command_allowed(event, "judge_explain"):
+            yield event.plain_result("❌ 当前会话无权限使用该指令")
+            return
+            
+        session_id = getattr(event, "unified_msg_origin", "")
+        if not session_id:
+             yield event.plain_result("⚠️ 无法获取会话ID")
+             return
+             
+        record = self._last_route.get(session_id)
+        if not record:
+            yield event.plain_result("⚠️ 当前会话暂无最近的路由记录")
+            return
+            
+        # 美化输出
+        decision = record.get("decision", "UNKNOWN")
+        pool = record.get("pool", "UNKNOWN")
+        reason = record.get("judge_reason", "")
+        source = record.get("judge_source", "")
+        policy = record.get("policy", "")
+        lock = record.get("lock", False)
+        budget_blocked = record.get("budget_blocked", False)
+        provider = record.get("provider_id", "")
+        model = record.get("model", "")
+        ts = record.get("ts", 0)
         
-        result_msg = f"""🏓 LLM模型活跃测试
-━━━━━━━━━━━━━━━━━━━━
-""" + "\n".join(results)
+        import datetime
+        time_str = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
         
-        yield event.plain_result(result_msg)
+        lines = [
+            f"🧐 **路由决策解释** ({time_str})",
+            "━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"🎯 **最终结果**: `{pool}` (Provider: {provider or '未选'})",
+            f"🧠 **复杂度判定**: `{decision}`",
+            f"   └─ 来源: {source} ({reason or '无详情'})"
+        ]
+        
+        if lock:
+            lines.append("🔒 **会话锁定**: ✅ 生效中 (覆盖了默认路由)")
+            
+        if policy:
+            lines.append(f"🛡️ **模型池策略**: `{policy}`")
+            
+        if budget_blocked:
+            lines.append("💰 **预算控制**: 🚫 拦截 (判定为HIGH但降级为FAST)")
+            
+        yield event.plain_result("\n".join(lines))
+
 
     async def terminate(self):
         """插件销毁"""
