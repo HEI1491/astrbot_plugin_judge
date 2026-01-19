@@ -19,6 +19,8 @@ class JudgePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
+        self._decision_cache = {}
+        self._answer_cache = {}
         
         # 判断提示词模板 - 使用 string.Template 避免花括号注入问题
         self.judge_prompt_template = Template("""你是一个消息复杂度判断助手。请分析以下用户消息,判断它需要使用哪种模型来回答。
@@ -120,6 +122,173 @@ $message
         
         # 如果没有匹配到任何命令模式,返回原消息
         return message.strip()
+    
+    def _normalize_text(self, text: str) -> str:
+        if not isinstance(text, str):
+            return ""
+        normalized = text.strip().lower()
+        normalized = re.sub(r"\s+", " ", normalized)
+        normalized = re.sub(r"[^\w\s\u4e00-\u9fff]+", "", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        return normalized
+    
+    def _cache_get(self, cache: dict, key: str):
+        item = cache.get(key)
+        if not item:
+            return None
+        expires_at, value = item
+        if expires_at and expires_at < self._now_ts():
+            try:
+                cache.pop(key, None)
+            except Exception:
+                pass
+            return None
+        return value
+    
+    def _cache_set(self, cache: dict, key: str, value, ttl_seconds: int, max_entries: int):
+        try:
+            ttl_seconds = int(ttl_seconds)
+        except Exception:
+            ttl_seconds = 0
+        try:
+            max_entries = int(max_entries)
+        except Exception:
+            max_entries = 0
+        
+        if max_entries <= 0:
+            return
+        
+        now = self._now_ts()
+        expires_at = now + ttl_seconds if ttl_seconds and ttl_seconds > 0 else 0
+        
+        expired_keys = []
+        if ttl_seconds and ttl_seconds > 0:
+            for k, (exp, _) in list(cache.items()):
+                if exp and exp < now:
+                    expired_keys.append(k)
+        for k in expired_keys:
+            cache.pop(k, None)
+        
+        while len(cache) >= max_entries:
+            try:
+                oldest_key = next(iter(cache))
+                cache.pop(oldest_key, None)
+            except Exception:
+                break
+        
+        cache[key] = (expires_at, value)
+    
+    def _now_ts(self) -> int:
+        try:
+            import time
+            return int(time.time())
+        except Exception:
+            return 0
+    
+    def _get_budget_mode(self, event: AstrMessageEvent) -> str:
+        default_mode = str(self.config.get("budget_mode", "BALANCED") or "BALANCED").upper()
+        if default_mode not in ("ECONOMY", "BALANCED", "FLAGSHIP"):
+            default_mode = "BALANCED"
+        
+        overrides_raw = self.config.get("budget_overrides_json", "")
+        if not overrides_raw:
+            return default_mode
+        
+        try:
+            overrides = json.loads(overrides_raw)
+        except Exception:
+            return default_mode
+        
+        if not isinstance(overrides, dict):
+            return default_mode
+        
+        session_id = getattr(event, "unified_msg_origin", "") or ""
+        group_id = event.get_group_id() if hasattr(event, "get_group_id") else ""
+        sender_id = event.get_sender_id() if hasattr(event, "get_sender_id") else ""
+        
+        for key in (session_id, group_id, sender_id):
+            if not key:
+                continue
+            mode = overrides.get(key)
+            if not mode:
+                continue
+            mode_str = str(mode).upper()
+            if mode_str in ("ECONOMY", "BALANCED", "FLAGSHIP"):
+                return mode_str
+        
+        return default_mode
+    
+    def _get_high_iq_ratio(self, budget_mode: str) -> int:
+        if budget_mode == "ECONOMY":
+            ratio = self.config.get("economy_high_iq_ratio", 20)
+        elif budget_mode == "FLAGSHIP":
+            ratio = self.config.get("flagship_high_iq_ratio", 95)
+        else:
+            ratio = self.config.get("balanced_high_iq_ratio", 60)
+        
+        try:
+            ratio = int(ratio)
+        except Exception:
+            ratio = 60
+        
+        if ratio < 0:
+            ratio = 0
+        if ratio > 100:
+            ratio = 100
+        return ratio
+    
+    def _budget_allows_high_iq(self, event: AstrMessageEvent) -> bool:
+        if not self.config.get("enable_budget_control", False):
+            return True
+        budget_mode = self._get_budget_mode(event)
+        ratio = self._get_high_iq_ratio(budget_mode)
+        if ratio >= 100:
+            return True
+        if ratio <= 0:
+            return False
+        return random.randint(1, 100) <= ratio
+    
+    def _rule_prejudge(self, message: str) -> str:
+        message_str = message or ""
+        message_lower = message_str.lower()
+        
+        if len(message_str) > 200:
+            return "HIGH"
+        if "```" in message_str or "def " in message_lower or "function " in message_lower:
+            return "HIGH"
+        
+        complex_keywords = [
+            "代码", "编程", "程序", "算法", "函数", "类", "接口",
+            "计算", "数学", "公式", "方程", "证明", "推导",
+            "分析", "解释", "详细", "原理", "机制", "为什么",
+            "比较", "区别", "优缺点", "总结", "归纳",
+            "写一篇", "写一个", "帮我写", "生成", "创作",
+            "翻译", "转换", "格式化",
+            "python", "java", "javascript", "c++", "sql", "html", "css",
+            "bug", "error", "debug", "修复", "优化",
+            "设计", "架构", "方案", "策略", "规划"
+        ]
+        
+        simple_keywords = [
+            "你好", "嗨", "hi", "hello", "早上好", "晚上好",
+            "谢谢", "感谢", "好的", "可以", "行", "嗯",
+            "是", "否", "对", "不对", "是的", "不是",
+            "几点", "天气", "今天", "明天",
+            "在吗", "在不在", "有空吗"
+        ]
+        
+        for keyword in complex_keywords:
+            if keyword in message_lower:
+                return "HIGH"
+        
+        for keyword in simple_keywords:
+            if keyword in message_lower:
+                return "FAST"
+        
+        if len(message_str) <= 20 and ("?" in message_str or "？" in message_str):
+            return "FAST"
+        
+        return "UNKNOWN"
     
     async def _get_command_llm_context(self, event: AstrMessageEvent) -> list:
         if not self.config.get("enable_command_context", False):
@@ -293,7 +462,9 @@ $message
             # 调用判断模型
             decision = await self._judge_message_complexity(user_message)
             
-            if decision == "HIGH":
+            use_high_iq = decision == "HIGH" and self._budget_allows_high_iq(event)
+            
+            if use_high_iq:
                 # 使用高智商模型(从列表中随机选择)
                 provider_id, model_name = self._get_high_iq_provider_model()
                 if provider_id:
@@ -326,17 +497,38 @@ $message
         Returns:
             "HIGH" 或 "FAST"
         """
+        if self.config.get("enable_rule_prejudge", True):
+            pre = self._rule_prejudge(message)
+            if pre in ("HIGH", "FAST"):
+                return pre
+        
+        normalized = self._normalize_text(message)
+        if self.config.get("enable_decision_cache", True) and normalized:
+            cached = self._cache_get(self._decision_cache, f"decision:{normalized}")
+            if cached in ("HIGH", "FAST"):
+                return cached
+        
         judge_provider_id = self.config.get("judge_provider_id", "")
         
         if not judge_provider_id:
             # 没有配置判断模型,使用简单规则判断
-            return self._simple_rule_judge(message)
+            decision = self._simple_rule_judge(message)
+            return decision
         
         # 获取判断模型提供商
         provider = self.context.get_provider_by_id(judge_provider_id)
         if not provider:
             logger.warning(f"[JudgePlugin] 找不到判断模型提供商: {judge_provider_id},使用规则判断")
-            return self._simple_rule_judge(message)
+            decision = self._simple_rule_judge(message)
+            if self.config.get("enable_decision_cache", True) and normalized:
+                self._cache_set(
+                    self._decision_cache,
+                    f"decision:{normalized}",
+                    decision,
+                    self.config.get("decision_cache_ttl_seconds", 600),
+                    self.config.get("decision_cache_max_entries", 500)
+                )
+            return decision
         
         # 获取自定义提示词(如果有)
         custom_prompt = self.config.get("custom_judge_prompt", "")
@@ -363,17 +555,37 @@ $message
             result_text = response.completion_text.strip().upper()
             
             if "HIGH" in result_text:
-                return "HIGH"
+                decision = "HIGH"
             elif "FAST" in result_text:
-                return "FAST"
+                decision = "FAST"
             else:
                 # 无法解析,使用规则判断
                 logger.warning(f"[JudgePlugin] 判断模型返回无法解析: {result_text}")
-                return self._simple_rule_judge(message)
+                decision = self._simple_rule_judge(message)
+            
+            if self.config.get("enable_decision_cache", True) and normalized:
+                self._cache_set(
+                    self._decision_cache,
+                    f"decision:{normalized}",
+                    decision,
+                    self.config.get("decision_cache_ttl_seconds", 600),
+                    self.config.get("decision_cache_max_entries", 500)
+                )
+            
+            return decision
                 
         except Exception as e:
             logger.error(f"[JudgePlugin] 调用判断模型失败: {e}")
-            return self._simple_rule_judge(message)
+            decision = self._simple_rule_judge(message)
+            if self.config.get("enable_decision_cache", True) and normalized:
+                self._cache_set(
+                    self._decision_cache,
+                    f"decision:{normalized}",
+                    decision,
+                    self.config.get("decision_cache_ttl_seconds", 600),
+                    self.config.get("decision_cache_max_entries", 500)
+                )
+            return decision
 
     def _simple_rule_judge(self, message: str) -> str:
         """
@@ -498,6 +710,23 @@ $message
             
             context_messages = await self._get_command_llm_context(event)
             
+            normalized_q = self._normalize_text(question)
+            if (self.config.get("enable_answer_cache", False) and
+                not self.config.get("enable_command_context", False) and
+                normalized_q):
+                cache_key = f"answer:{provider_id}:{model_name}:{self._normalize_text(system_prompt)}:{normalized_q}"
+                cached_answer = self._cache_get(self._answer_cache, cache_key)
+                if isinstance(cached_answer, str) and cached_answer:
+                    await self._append_command_llm_context(event, question, cached_answer)
+                    yield event.plain_result(f"""{model_type} 回答
+━━━━━━━━━━━━━━━━━━━━
+📝 问题: {question[:50]}{"..." if len(question) > 50 else ""}
+🤖 提供商: {provider_id}
+📋 模型: {model_name or '默认'}
+━━━━━━━━━━━━━━━━━━━━
+{cached_answer}""")
+                    return
+            
             response = await self._provider_text_chat(
                 provider,
                 prompt=question,
@@ -507,6 +736,17 @@ $message
             )
             
             answer = response.completion_text
+            if (self.config.get("enable_answer_cache", False) and
+                not self.config.get("enable_command_context", False) and
+                normalized_q):
+                cache_key = f"answer:{provider_id}:{model_name}:{self._normalize_text(system_prompt)}:{normalized_q}"
+                self._cache_set(
+                    self._answer_cache,
+                    cache_key,
+                    answer,
+                    self.config.get("answer_cache_ttl_seconds", 300),
+                    self.config.get("answer_cache_max_entries", 200)
+                )
             await self._append_command_llm_context(event, question, answer)
             
             yield event.plain_result(f"""{model_type} 回答
@@ -544,11 +784,23 @@ $message
             model = fast_models[i] if i < len(fast_models) else "默认"
             fast_info.append(f"  • {pid} ({model})")
         
+        enable_budget_control = self.config.get("enable_budget_control", False)
+        budget_mode = self._get_budget_mode(event)
+        budget_ratio = self._get_high_iq_ratio(budget_mode)
+        enable_rule_prejudge = self.config.get("enable_rule_prejudge", True)
+        enable_decision_cache = self.config.get("enable_decision_cache", True)
+        decision_cache_ttl = self.config.get("decision_cache_ttl_seconds", 600)
+        enable_answer_cache = self.config.get("enable_answer_cache", False)
+        
         status_msg = f"""📊 智能路由判断插件状态
 ━━━━━━━━━━━━━━━━━━━━
 🔌 插件状态: {"✅ 已启用" if enabled else "❌ 已禁用"}
 🧠 判断模型提供商: {judge_provider}
 🔁 高智商模型轮询: {"✅ 启用" if high_iq_polling_enabled else "❌ 关闭"}
+💰 预算控制: {"✅ 启用" if enable_budget_control else "❌ 关闭"} ({budget_mode}/{budget_ratio}%)
+🧪 规则预判: {"✅ 启用" if enable_rule_prejudge else "❌ 关闭"}
+🧠 决策缓存: {"✅ 启用" if enable_decision_cache else "❌ 关闭"} (TTL={decision_cache_ttl}s)
+📦 回答缓存: {"✅ 启用" if enable_answer_cache else "❌ 关闭"}
 🎯 高智商模型提供商 ({len(high_iq_provider_ids)}个):
 {chr(10).join(high_iq_info) if high_iq_info else "  未配置"}
 ⚡ 快速模型提供商 ({len(fast_provider_ids)}个):
@@ -657,8 +909,14 @@ $message
         try:
             # 先判断复杂度
             decision = await self._judge_message_complexity(question)
+            use_high_iq = decision == "HIGH" and self._budget_allows_high_iq(event)
+            decision_display = decision
+            if decision == "HIGH" and not use_high_iq and self.config.get("enable_budget_control", False):
+                budget_mode = self._get_budget_mode(event)
+                ratio = self._get_high_iq_ratio(budget_mode)
+                decision_display = f"{decision} (预算:{budget_mode}/{ratio}%)"
             
-            if decision == "HIGH":
+            if use_high_iq:
                 provider_id, model_name = self._get_high_iq_provider_model()
                 model_type = "🧠 高智商模型"
                 system_prompt = "你是一个智能助手,请认真、详细地回答用户的问题。"
@@ -681,6 +939,24 @@ $message
             
             context_messages = await self._get_command_llm_context(event)
             
+            normalized_q = self._normalize_text(question)
+            if (self.config.get("enable_answer_cache", False) and
+                not self.config.get("enable_command_context", False) and
+                normalized_q):
+                cache_key = f"answer:{provider_id}:{model_name}:{self._normalize_text(system_prompt)}:{normalized_q}"
+                cached_answer = self._cache_get(self._answer_cache, cache_key)
+                if isinstance(cached_answer, str) and cached_answer:
+                    await self._append_command_llm_context(event, question, cached_answer)
+                    yield event.plain_result(f"""{model_type} 智能回答
+━━━━━━━━━━━━━━━━━━━━
+📝 问题: {question[:50]}{"..." if len(question) > 50 else ""}
+📊 判断: {decision_display} → {model_type}
+🤖 提供商: {provider_id}
+📋 模型: {model_name or '默认'}
+━━━━━━━━━━━━━━━━━━━━
+{cached_answer}""")
+                    return
+            
             # 调用选定的模型
             response = await self._provider_text_chat(
                 provider,
@@ -691,12 +967,23 @@ $message
             )
             
             answer = response.completion_text
+            if (self.config.get("enable_answer_cache", False) and
+                not self.config.get("enable_command_context", False) and
+                normalized_q):
+                cache_key = f"answer:{provider_id}:{model_name}:{self._normalize_text(system_prompt)}:{normalized_q}"
+                self._cache_set(
+                    self._answer_cache,
+                    cache_key,
+                    answer,
+                    self.config.get("answer_cache_ttl_seconds", 300),
+                    self.config.get("answer_cache_max_entries", 200)
+                )
             await self._append_command_llm_context(event, question, answer)
             
             yield event.plain_result(f"""{model_type} 智能回答
 ━━━━━━━━━━━━━━━━━━━━
 📝 问题: {question[:50]}{"..." if len(question) > 50 else ""}
-📊 判断: {decision} → {model_type}
+📊 判断: {decision_display} → {model_type}
 🤖 提供商: {provider_id}
 📋 模型: {model_name or '默认'}
 ━━━━━━━━━━━━━━━━━━━━

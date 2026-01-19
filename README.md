@@ -9,22 +9,17 @@
 - **备用规则**:当判断模型不可用时,使用内置规则进行判断
 - **灵活配置**:支持配置多个高智商/快速模型提供商,每个提供商可指定模型
 - **随机选择**:高智商模型支持从提供商列表中随机选择(可关闭),实现负载均衡
+- **降本优化**:预算控制、规则预判、决策缓存、命令回答缓存
 - **白名单/黑名单**:支持按会话、群组、用户进行过滤
 
 ## 更新日志
 
-### 1.0.3
+### 1.1.3
 
-- 优化命令参数解析,适配更多自定义命令前缀(不再局限 / . ! # &)
-- 新增统一 LLM 调用封装,减少重复并提升可维护性
-- 命令模式上下文仅传 user/assistant 历史,降低提示词冲突风险
-
-### 1.0.2
-
-- 新增高智商模型轮询开关 `enable_high_iq_polling`（关闭后固定使用列表第一个）
-- 新增命令模式上下文 `enable_command_context` 与 `command_context_max_turns`（让 /大、/小、/问 支持多轮追问）
-- 命令前缀新增支持 `&`（如 `&高智商 ...`）
-- 修正 `custom_judge_prompt` 占位符说明为 `$message`
+- 新增预算控制 `enable_budget_control` + `budget_mode` + 覆盖配置,可按会话/群/用户控制高智商触发比例
+- 新增规则预判 `enable_rule_prejudge`,明显简单/复杂消息不再调用判断模型
+- 新增决策缓存 `enable_decision_cache`,减少重复判断
+- 新增命令回答缓存 `enable_answer_cache`,降低重复问答成本(命令上下文开启时默认不命中)
 
 ## 工作原理
 
@@ -68,6 +63,19 @@
 | `enable_high_iq_polling` | 是否启用高智商模型轮询(随机负载均衡) | 否 | `true` |
 | `enable_command_context` | 命令模式是否带上下文(多轮追问) | 否 | `false` |
 | `command_context_max_turns` | 命令模式上下文保留轮数 | 否 | `10` |
+| `enable_budget_control` | 启用预算控制(降本) | 否 | `false` |
+| `budget_mode` | 预算模式(ECONOMY/BALANCED/FLAGSHIP) | 否 | `BALANCED` |
+| `budget_overrides_json` | 预算模式覆盖(按会话/群/用户) | 否 | 空 |
+| `economy_high_iq_ratio` | ECONOMY 高智商触发比例(%) | 否 | `20` |
+| `balanced_high_iq_ratio` | BALANCED 高智商触发比例(%) | 否 | `60` |
+| `flagship_high_iq_ratio` | FLAGSHIP 高智商触发比例(%) | 否 | `95` |
+| `enable_rule_prejudge` | 启用规则预判(减少判断模型调用) | 否 | `true` |
+| `enable_decision_cache` | 启用决策缓存(减少判断模型调用) | 否 | `true` |
+| `decision_cache_ttl_seconds` | 决策缓存TTL(秒) | 否 | `600` |
+| `decision_cache_max_entries` | 决策缓存最大条数 | 否 | `500` |
+| `enable_answer_cache` | 启用命令回答缓存(减少重复调用) | 否 | `false` |
+| `answer_cache_ttl_seconds` | 回答缓存TTL(秒) | 否 | `300` |
+| `answer_cache_max_entries` | 回答缓存最大条数 | 否 | `200` |
 | `high_iq_models` | 高智商模型名称列表(与提供商一一对应) | 否 | `[]` |
 | `fast_provider_ids` | 快速模型提供商ID列表 | 否 | `[]` |
 | `fast_models` | 快速模型名称列表(与提供商一一对应) | 否 | `[]` |
@@ -91,6 +99,15 @@
   "enable_high_iq_polling": true,
   "enable_command_context": false,
   "command_context_max_turns": 10,
+  "enable_budget_control": true,
+  "budget_mode": "BALANCED",
+  "balanced_high_iq_ratio": 60,
+  "budget_overrides_json": "",
+  "enable_rule_prejudge": true,
+  "enable_decision_cache": true,
+  "decision_cache_ttl_seconds": 600,
+  "decision_cache_max_entries": 500,
+  "enable_answer_cache": false,
   "high_iq_models": [
     "gpt-4o",
     "claude-3-opus",
@@ -118,6 +135,10 @@
 - 模型名称列表中的某项留空表示使用该提供商的默认模型
 - `enable_high_iq_polling` 为 `true` 时,高智商模型会从列表中随机选择一个提供商使用;为 `false` 时固定使用列表第一个
 - `enable_command_context` 为 `true` 时,命令模式(如 /大、/小、/问)会将当前会话对话历史作为上下文传给模型,从而实现连续追问
+- `enable_budget_control` 为 `true` 时,当判断为 HIGH 会按预算比例决定是否使用高智商模型;可通过 `budget_overrides_json` 按会话/群/用户覆盖预算模式
+- `enable_rule_prejudge` 为 `true` 时,明显简单/复杂消息会直接判定,避免调用判断模型
+- `enable_decision_cache` 为 `true` 时,会缓存消息的判定结果,降低重复判断开销
+- `enable_answer_cache` 为 `true` 时,命令问答会对重复问题短期缓存答案(命令上下文开启时默认不命中)
 
 ## 使用命令
 
@@ -255,7 +276,7 @@
 ## 开发者信息
 
 - **插件名称**: astrbot_plugin_judge
-- **版本**: 1.0.2
+- **版本**: 1.1.3
 - **作者**: HEI
 - **仓库**: https://github.com/AstrBotDevs/astrbot_plugin_judge
 

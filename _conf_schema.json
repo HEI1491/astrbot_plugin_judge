@@ -43,6 +43,85 @@
         "default": 10,
         "hint": "仅在启用命令模式上下文时生效;表示保留最近 N 轮对话(一轮=用户+助手)"
     },
+    "enable_budget_control": {
+        "description": "启用预算控制(降本)",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后,当判断为 HIGH 时会按预算比例决定是否真正使用高智商模型;关闭则保持原逻辑(判 HIGH 必走高智商)"
+    },
+    "budget_mode": {
+        "description": "预算模式",
+        "type": "string",
+        "default": "BALANCED",
+        "options": ["ECONOMY", "BALANCED", "FLAGSHIP"],
+        "hint": "ECONOMY 更省钱,BALANCED 均衡,FLAGSHIP 更注重效果"
+    },
+    "budget_overrides_json": {
+        "description": "预算模式覆盖(按会话/群/用户)",
+        "type": "text",
+        "default": "",
+        "hint": "填写 JSON 对象,键可为 unified_msg_origin/group_id/sender_id,值为 ECONOMY/BALANCED/FLAGSHIP。例如: {\"qq:group:123\":\"ECONOMY\",\"123\":\"FLAGSHIP\"}"
+    },
+    "economy_high_iq_ratio": {
+        "description": "ECONOMY 高智商触发比例(%)",
+        "type": "int",
+        "default": 20,
+        "hint": "0-100,当判断为 HIGH 时,仍有该比例使用高智商模型"
+    },
+    "balanced_high_iq_ratio": {
+        "description": "BALANCED 高智商触发比例(%)",
+        "type": "int",
+        "default": 60,
+        "hint": "0-100,当判断为 HIGH 时,仍有该比例使用高智商模型"
+    },
+    "flagship_high_iq_ratio": {
+        "description": "FLAGSHIP 高智商触发比例(%)",
+        "type": "int",
+        "default": 95,
+        "hint": "0-100,当判断为 HIGH 时,仍有该比例使用高智商模型"
+    },
+    "enable_rule_prejudge": {
+        "description": "启用规则预判(减少判断模型调用)",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后,会先用轻量规则直接判定明显 HIGH/FAST;只有不确定时才调用判断模型"
+    },
+    "enable_decision_cache": {
+        "description": "启用决策缓存(减少判断模型调用)",
+        "type": "bool",
+        "default": true,
+        "hint": "缓存消息的 HIGH/FAST 判定结果,避免重复判断"
+    },
+    "decision_cache_ttl_seconds": {
+        "description": "决策缓存TTL(秒)",
+        "type": "int",
+        "default": 600,
+        "hint": "缓存有效期,过期后重新判断"
+    },
+    "decision_cache_max_entries": {
+        "description": "决策缓存最大条数",
+        "type": "int",
+        "default": 500,
+        "hint": "超过后会自动淘汰旧条目"
+    },
+    "enable_answer_cache": {
+        "description": "启用命令回答缓存(减少重复调用)",
+        "type": "bool",
+        "default": false,
+        "hint": "仅对命令模式(/大、/小、/问等)生效;当开启命令上下文时默认不命中缓存以避免上下文差异"
+    },
+    "answer_cache_ttl_seconds": {
+        "description": "回答缓存TTL(秒)",
+        "type": "int",
+        "default": 300,
+        "hint": "缓存有效期,过期后重新调用模型"
+    },
+    "answer_cache_max_entries": {
+        "description": "回答缓存最大条数",
+        "type": "int",
+        "default": 200,
+        "hint": "超过后会自动淘汰旧条目"
+    },
     "high_iq_models": {
         "description": "高智商模型名称列表",
         "type": "list",
