@@ -112,8 +112,8 @@ $message
         # 构建正则表达式,匹配任意前缀(包括 /, ., !, 无前缀等)
         # 模式: ^[可选前缀符号][命令名称]\s*(.*)$
         for pattern in command_patterns:
-            # 匹配可能的前缀符号: / . ! # & 或无前缀
-            regex = rf'^[\/\.!#&]?{re.escape(pattern)}\s*(.*)$'
+            # 匹配可能的前缀符号: 任意数量的非“字母数字下划线/空白”字符,或无前缀
+            regex = rf'^[^\w\s]*{re.escape(pattern)}\s*(.*)$'
             match = re.match(regex, message, re.IGNORECASE)
             if match:
                 return match.group(1).strip()
@@ -162,7 +162,7 @@ $message
                 continue
             role = item.get("role")
             content = item.get("content")
-            if role not in ("system", "user", "assistant"):
+            if role not in ("user", "assistant"):
                 continue
             if not isinstance(content, str):
                 continue
@@ -222,6 +222,15 @@ $message
             await conv_mgr.update_conversation(uid, curr_cid, history=history)
         except Exception:
             return
+    
+    async def _provider_text_chat(self, provider, prompt: str, system_prompt: str, model_name: str = "", context_messages: list = None):
+        response = await provider.text_chat(
+            prompt=prompt,
+            context=context_messages or [],
+            system_prompt=system_prompt,
+            model=model_name if model_name else None
+        )
+        return response
 
     async def initialize(self):
         """插件初始化"""
@@ -230,8 +239,12 @@ $message
         # 验证配置
         judge_provider = self.config.get("judge_provider_id", "")
         high_iq_provider_ids = self.config.get("high_iq_provider_ids", [])
+        high_iq_models = self.config.get("high_iq_models", [])
         fast_provider_ids = self.config.get("fast_provider_ids", [])
+        fast_models = self.config.get("fast_models", [])
         enable_high_iq_polling = self.config.get("enable_high_iq_polling", True)
+        enable_command_context = self.config.get("enable_command_context", False)
+        command_context_max_turns = self.config.get("command_context_max_turns", 10)
         
         if not judge_provider:
             logger.error("[JudgePlugin] 【必填】未配置判断模型提供商ID,插件无法正常工作!")
@@ -240,10 +253,19 @@ $message
         else:
             logger.info(f"[JudgePlugin] 高智商模型提供商列表: {high_iq_provider_ids}")
             logger.info(f"[JudgePlugin] 高智商模型轮询: {'启用' if enable_high_iq_polling else '关闭'}")
+            if isinstance(high_iq_models, list) and len(high_iq_models) < len(high_iq_provider_ids):
+                logger.warning("[JudgePlugin] 高智商模型名称列表长度小于提供商列表长度,未覆盖的项将使用默认模型")
         if not fast_provider_ids:
             logger.warning("[JudgePlugin] 未配置快速模型提供商列表")
         else:
             logger.info(f"[JudgePlugin] 快速模型提供商列表: {fast_provider_ids}")
+            if isinstance(fast_models, list) and len(fast_models) < len(fast_provider_ids):
+                logger.warning("[JudgePlugin] 快速模型名称列表长度小于提供商列表长度,未覆盖的项将使用默认模型")
+        
+        if enable_command_context:
+            logger.info(f"[JudgePlugin] 命令模式上下文: 启用 (保留{command_context_max_turns}轮)")
+        else:
+            logger.info("[JudgePlugin] 命令模式上下文: 关闭")
             
         logger.info("[JudgePlugin] 初始化完成")
 
@@ -329,11 +351,12 @@ $message
         judge_model = self.config.get("judge_model", "")
         
         try:
-            response = await provider.text_chat(
+            response = await self._provider_text_chat(
+                provider,
                 prompt=prompt,
-                context=[],
+                context_messages=[],
                 system_prompt="你是一个消息复杂度判断助手,只回复 HIGH 或 FAST。",
-                model=judge_model if judge_model else None
+                model_name=judge_model
             )
             
             # 解析响应
@@ -475,12 +498,12 @@ $message
             
             context_messages = await self._get_command_llm_context(event)
             
-            # 调用模型
-            response = await provider.text_chat(
+            response = await self._provider_text_chat(
+                provider,
                 prompt=question,
-                context=context_messages,
+                context_messages=context_messages,
                 system_prompt=system_prompt,
-                model=model_name if model_name else None
+                model_name=model_name
             )
             
             answer = response.completion_text
@@ -531,7 +554,7 @@ $message
 ⚡ 快速模型提供商 ({len(fast_provider_ids)}个):
 {chr(10).join(fast_info) if fast_info else "  未配置"}
 ━━━━━━━━━━━━━━━━━━━━
-注: 插件会从提供商列表中随机选择"""
+注: 快速模型随机选择;高智商模型可随机选择(可关闭)"""
         
         yield event.plain_result(status_msg)
 
@@ -659,11 +682,12 @@ $message
             context_messages = await self._get_command_llm_context(event)
             
             # 调用选定的模型
-            response = await provider.text_chat(
+            response = await self._provider_text_chat(
+                provider,
                 prompt=question,
-                context=context_messages,
+                context_messages=context_messages,
                 system_prompt=system_prompt,
-                model=model_name if model_name else None
+                model_name=model_name
             )
             
             answer = response.completion_text
@@ -717,11 +741,12 @@ $message
                     
                 try:
                     start_time = time.time()
-                    response = await provider.text_chat(
+                    response = await self._provider_text_chat(
+                        provider,
                         prompt="请回复:OK",
-                        context=[],
+                        context_messages=[],
                         system_prompt="只回复OK两个字母",
-                        model=model_name if model_name else None
+                        model_name=model_name
                     )
                     elapsed = time.time() - start_time
                     display_model = model_name if model_name else "默认"
@@ -745,11 +770,12 @@ $message
                     
                 try:
                     start_time = time.time()
-                    response = await provider.text_chat(
+                    response = await self._provider_text_chat(
+                        provider,
                         prompt="请回复:OK",
-                        context=[],
+                        context_messages=[],
                         system_prompt="只回复OK两个字母",
-                        model=model_name if model_name else None
+                        model_name=model_name
                     )
                     elapsed = time.time() - start_time
                     display_model = model_name if model_name else "默认"
