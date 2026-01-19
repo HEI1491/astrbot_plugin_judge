@@ -25,6 +25,12 @@
         "default": [],
         "hint": "用于处理复杂问题的模型提供商ID列表,支持配置多个。插件会随机选择一个使用"
     },
+    "enable_high_iq_polling": {
+        "description": "是否启用高智商模型轮询",
+        "type": "bool",
+        "default": true,
+        "hint": "启用后,会在高智商提供商列表中随机选择(负载均衡)。关闭后,固定使用列表第一个提供商/模型"
+    },
     "high_iq_models": {
         "description": "高智商模型名称列表",
         "type": "list",
@@ -66,6 +72,6 @@
         "description": "自定义判断提示词",
         "type": "text",
         "default": "",
-        "hint": "自定义判断消息复杂度的提示词,留空使用默认提示词。需包含 {message} 占位符"
+        "hint": "自定义判断消息复杂度的提示词,留空使用默认提示词。需包含 $message 占位符"
     }
 }

@@ -13,11 +13,7 @@ from astrbot.api import logger, AstrBotConfig
 
 
 class JudgePlugin(Star):
-    """智能路由判断插件
-    
-    AstrBot v3.5.20+ 推荐直接通过继承 Star 类来自动发现插件,
-    无需使用 @register 装饰器。
-    """
+    """智能路由判断插件"""
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -74,6 +70,22 @@ $message
         """
         provider_ids = self.config.get("high_iq_provider_ids", [])
         model_names = self.config.get("high_iq_models", [])
+        enable_polling = self.config.get("enable_high_iq_polling", True)
+        
+        if not isinstance(provider_ids, list):
+            logger.warning(f"[JudgePlugin] high_iq_provider_ids 应为列表类型,实际为: {type(provider_ids)}")
+            return ("", "")
+        
+        if not provider_ids:
+            return ("", "")
+        
+        if not enable_polling:
+            provider_id = provider_ids[0]
+            model_name = ""
+            if isinstance(model_names, list) and len(model_names) > 0:
+                model_name = model_names[0]
+            return (provider_id, model_name)
+        
         return self._get_provider_model_pair(provider_ids, model_names)
     
     def _get_fast_provider_model(self) -> tuple:
@@ -116,6 +128,7 @@ $message
         judge_provider = self.config.get("judge_provider_id", "")
         high_iq_provider_ids = self.config.get("high_iq_provider_ids", [])
         fast_provider_ids = self.config.get("fast_provider_ids", [])
+        enable_high_iq_polling = self.config.get("enable_high_iq_polling", True)
         
         if not judge_provider:
             logger.error("[JudgePlugin] 【必填】未配置判断模型提供商ID,插件无法正常工作!")
@@ -123,6 +136,7 @@ $message
             logger.warning("[JudgePlugin] 未配置高智商模型提供商列表")
         else:
             logger.info(f"[JudgePlugin] 高智商模型提供商列表: {high_iq_provider_ids}")
+            logger.info(f"[JudgePlugin] 高智商模型轮询: {'启用' if enable_high_iq_polling else '关闭'}")
         if not fast_provider_ids:
             logger.warning("[JudgePlugin] 未配置快速模型提供商列表")
         else:
@@ -385,6 +399,7 @@ $message
         judge_provider = self.config.get("judge_provider_id", "未配置")
         high_iq_provider_ids = self.config.get("high_iq_provider_ids", [])
         high_iq_models = self.config.get("high_iq_models", [])
+        high_iq_polling_enabled = self.config.get("enable_high_iq_polling", True)
         fast_provider_ids = self.config.get("fast_provider_ids", [])
         fast_models = self.config.get("fast_models", [])
         
@@ -404,6 +419,7 @@ $message
 ━━━━━━━━━━━━━━━━━━━━
 🔌 插件状态: {"✅ 已启用" if enabled else "❌ 已禁用"}
 🧠 判断模型提供商: {judge_provider}
+🔁 高智商模型轮询: {"✅ 启用" if high_iq_polling_enabled else "❌ 关闭"}
 🎯 高智商模型提供商 ({len(high_iq_provider_ids)}个):
 {chr(10).join(high_iq_info) if high_iq_info else "  未配置"}
 ⚡ 快速模型提供商 ({len(fast_provider_ids)}个):
