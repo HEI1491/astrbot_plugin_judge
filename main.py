@@ -485,7 +485,7 @@ $message
         }
         circuit_breaker_enabled = bool(self.config.get("enable_circuit_breaker", True))
         if circuit_breaker_enabled and provider_id and not (lock and lock.get("provider_id")):
-            if self._is_provider_temporarily_disabled(provider_id):
+            if self._is_provider_temporarily_disabled(provider_id, model_name):
                 self._stats_inc("router_cb_skip")
                 meta["cb_skipped"] = True
                 fallback_provider_id, fallback_model = self._get_available_provider_model(pool, exclude_provider_id=provider_id)
@@ -620,17 +620,42 @@ $message
             return ("HIGH", "len>200")
         if "```" in message_str or "def " in message_lower or "function " in message_lower:
             return ("HIGH", "codeblock")
+
+        meta_fast_patterns = [
+            r"把.*(需求|代码).*(贴|发|给|丢|贴我|发我)",
+            r"(把|将).*(代码|报错).*(发|贴|给).*(看看|我看看|我看下|我看一眼)",
+            r"(你要|想要|准备).*(写|搞).*(哪块|什么|哪个).*(编程|代码)",
+            r"(python|node|javascript|java).*(还是|或|或者).*(别的|其它|其他)"
+        ]
+        try:
+            for p in meta_fast_patterns:
+                if re.search(p, message_lower):
+                    return ("FAST", "meta:clarify")
+        except Exception:
+            pass
         
-        complex_keywords = [
-            "代码", "编程", "程序", "算法", "函数", "类", "接口",
+        strong_complex_keywords = [
+            "算法", "函数", "类", "接口",
             "计算", "数学", "公式", "方程", "证明", "推导",
-            "分析", "解释", "详细", "原理", "机制", "为什么",
+            "原理", "机制", "为什么",
             "比较", "区别", "优缺点", "总结", "归纳",
-            "写一篇", "写一个", "帮我写", "生成", "创作",
-            "翻译", "转换", "格式化",
-            "python", "java", "javascript", "c++", "sql", "html", "css",
-            "bug", "error", "debug", "修复", "优化",
+            "写一篇", "写一个", "帮我写", "实现", "改一下", "优化一下",
+            "格式化",
+            "sql", "正则",
+            "bug", "error", "debug", "调试", "报错", "修复", "优化",
             "设计", "架构", "方案", "策略", "规划"
+        ]
+
+        weak_complex_keywords = [
+            "编程", "程序", "代码",
+            "python", "java", "javascript", "node", "c++", "html", "css"
+        ]
+
+        weak_need_strong_triggers = [
+            "怎么", "如何", "为什么",
+            "写", "实现", "改", "生成", "修复", "优化", "调试",
+            "报错", "bug", "error", "debug",
+            "算法", "函数", "类", "接口", "sql", "正则"
         ]
         
         simple_keywords = [
@@ -640,14 +665,20 @@ $message
             "几点", "天气", "今天", "明天",
             "在吗", "在不在", "有空吗"
         ]
-        
-        for keyword in complex_keywords:
-            if keyword in message_lower:
-                return ("HIGH", f"kw:{keyword}")
-        
+
         for keyword in simple_keywords:
             if keyword in message_lower:
                 return ("FAST", f"kw:{keyword}")
+
+        for keyword in strong_complex_keywords:
+            if keyword in message_lower:
+                return ("HIGH", f"kw:{keyword}")
+
+        for keyword in weak_complex_keywords:
+            if keyword in message_lower:
+                if any(t in message_lower for t in weak_need_strong_triggers):
+                    return ("HIGH", f"kw:{keyword}")
+                return ("FAST", f"kw:{keyword}:weak")
         
         if len(message_str) <= 20 and ("?" in message_str or "？" in message_str):
             return ("FAST", "short_question")
@@ -1056,17 +1087,27 @@ $message
         Returns:
             "HIGH" 或 "FAST"
         """
-        # 复杂消息的关键词
-        complex_keywords = [
-            "代码", "编程", "程序", "算法", "函数", "类", "接口",
+        strong_complex_keywords = [
+            "算法", "函数", "类", "接口",
             "计算", "数学", "公式", "方程", "证明", "推导",
-            "分析", "解释", "详细", "原理", "机制", "为什么",
+            "原理", "机制", "为什么",
             "比较", "区别", "优缺点", "总结", "归纳",
-            "写一篇", "写一个", "帮我写", "生成", "创作",
-            "翻译", "转换", "格式化",
-            "python", "java", "javascript", "c++", "sql", "html", "css",
-            "bug", "error", "debug", "修复", "优化",
+            "写一个", "写一篇", "帮我写", "实现", "改一下", "优化一下",
+            "sql", "正则",
+            "bug", "error", "debug", "调试", "报错", "修复", "优化",
             "设计", "架构", "方案", "策略", "规划"
+        ]
+
+        weak_complex_keywords = [
+            "编程", "程序", "代码",
+            "python", "java", "javascript", "node", "c++", "html", "css"
+        ]
+
+        weak_need_strong_triggers = [
+            "怎么", "如何", "为什么",
+            "写", "实现", "改", "生成", "修复", "优化", "调试",
+            "报错", "bug", "error", "debug",
+            "算法", "函数", "类", "接口", "sql", "正则"
         ]
         
         # 简单消息的关键词
@@ -1087,11 +1128,16 @@ $message
         # 检查是否包含代码块
         if "```" in message or "def " in message or "function " in message:
             return "HIGH"
-        
-        # 检查复杂关键词
-        for keyword in complex_keywords:
+
+        for keyword in strong_complex_keywords:
             if keyword in message_lower:
                 return "HIGH"
+
+        for keyword in weak_complex_keywords:
+            if keyword in message_lower:
+                if any(t in message_lower for t in weak_need_strong_triggers):
+                    return "HIGH"
+                return "FAST"
         
         # 检查简单关键词
         for keyword in simple_keywords:
@@ -1763,7 +1809,7 @@ $message
             
         # 美化输出
         decision = record.get("decision", "UNKNOWN")
-        pool = record.get("pool", "UNKNOWN")
+        pool = record.get("final_pool") or record.get("desired_pool") or record.get("base_pool") or "UNKNOWN"
         reason = record.get("judge_reason", "")
         source = record.get("judge_source", "")
         policy = record.get("policy", "")
@@ -1779,7 +1825,7 @@ $message
         lines = [
             f"🧐 **路由决策解释** ({time_str})",
             "━━━━━━━━━━━━━━━━━━━━━━━━",
-            f"🎯 **最终结果**: `{pool}` (Provider: {provider or '未选'})",
+            f"🎯 **最终结果**: `{pool}` (Provider: {provider or '未选'}, Model: {model or '默认'})",
             f"🧠 **复杂度判定**: `{decision}`",
             f"   └─ 来源: {source} ({reason or '无详情'})"
         ]
