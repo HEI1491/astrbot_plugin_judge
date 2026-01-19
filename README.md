@@ -11,6 +11,15 @@
 - **随机选择**:高智商模型支持从提供商列表中随机选择(可关闭),实现负载均衡
 - **白名单/黑名单**:支持按会话、群组、用户进行过滤
 
+## 更新日志
+
+### 1.0.2
+
+- 新增高智商模型轮询开关 `enable_high_iq_polling`（关闭后固定使用列表第一个）
+- 新增命令模式上下文 `enable_command_context` 与 `command_context_max_turns`（让 /大、/小、/问 支持多轮追问）
+- 命令前缀新增支持 `&`（如 `&高智商 ...`）
+- 修正 `custom_judge_prompt` 占位符说明为 `$message`
+
 ## 工作原理
 
 ```
@@ -51,6 +60,8 @@
 | `judge_model` | 判断模型名称(可选) | 否 | - |
 | `high_iq_provider_ids` | 高智商模型提供商ID列表 | 否 | `[]` |
 | `enable_high_iq_polling` | 是否启用高智商模型轮询(随机负载均衡) | 否 | `true` |
+| `enable_command_context` | 命令模式是否带上下文(多轮追问) | 否 | `false` |
+| `command_context_max_turns` | 命令模式上下文保留轮数 | 否 | `10` |
 | `high_iq_models` | 高智商模型名称列表(与提供商一一对应) | 否 | `[]` |
 | `fast_provider_ids` | 快速模型提供商ID列表 | 否 | `[]` |
 | `fast_models` | 快速模型名称列表(与提供商一一对应) | 否 | `[]` |
@@ -72,6 +83,8 @@
     "deepseek_provider_1"
   ],
   "enable_high_iq_polling": true,
+  "enable_command_context": false,
+  "command_context_max_turns": 10,
   "high_iq_models": [
     "gpt-4o",
     "claude-3-opus",
@@ -98,6 +111,7 @@
 - 两个列表按索引一一对应,如 `high_iq_provider_ids[0]` 对应 `high_iq_models[0]`
 - 模型名称列表中的某项留空表示使用该提供商的默认模型
 - `enable_high_iq_polling` 为 `true` 时,高智商模型会从列表中随机选择一个提供商使用;为 `false` 时固定使用列表第一个
+- `enable_command_context` 为 `true` 时,命令模式(如 /大、/小、/问)会将当前会话对话历史作为上下文传给模型,从而实现连续追问
 
 ## 使用命令
 

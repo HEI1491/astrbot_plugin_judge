@@ -31,6 +31,18 @@
         "default": true,
         "hint": "启用后,会在高智商提供商列表中随机选择(负载均衡)。关闭后,固定使用列表第一个提供商/模型"
     },
+    "enable_command_context": {
+        "description": "命令模式启用上下文",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后,/高智商(/大)/快速(/小)/智能问答(/问) 等命令会带上当前会话对话历史,实现多轮追问"
+    },
+    "command_context_max_turns": {
+        "description": "命令模式上下文保留轮数",
+        "type": "int",
+        "default": 10,
+        "hint": "仅在启用命令模式上下文时生效;表示保留最近 N 轮对话(一轮=用户+助手)"
+    },
     "high_iq_models": {
         "description": "高智商模型名称列表",
         "type": "list",

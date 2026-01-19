@@ -5,6 +5,7 @@ AstrBot 智能路由判断插件
 
 import re
 import random
+import json
 from string import Template
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star
@@ -111,14 +112,116 @@ $message
         # 构建正则表达式,匹配任意前缀(包括 /, ., !, 无前缀等)
         # 模式: ^[可选前缀符号][命令名称]\s*(.*)$
         for pattern in command_patterns:
-            # 匹配可能的前缀符号: / . ! # 或无前缀
-            regex = rf'^[/\.!#]?{re.escape(pattern)}\s*(.*)$'
+            # 匹配可能的前缀符号: / . ! # & 或无前缀
+            regex = rf'^[\/\.!#&]?{re.escape(pattern)}\s*(.*)$'
             match = re.match(regex, message, re.IGNORECASE)
             if match:
                 return match.group(1).strip()
         
         # 如果没有匹配到任何命令模式,返回原消息
         return message.strip()
+    
+    async def _get_command_llm_context(self, event: AstrMessageEvent) -> list:
+        if not self.config.get("enable_command_context", False):
+            return []
+        
+        max_turns = self.config.get("command_context_max_turns", 10)
+        try:
+            max_turns = int(max_turns)
+        except Exception:
+            max_turns = 10
+        
+        if max_turns <= 0:
+            return []
+        
+        uid = event.unified_msg_origin
+        try:
+            conv_mgr = self.context.conversation_manager
+            curr_cid = await conv_mgr.get_curr_conversation_id(uid)
+            if not curr_cid:
+                return []
+            conversation = await conv_mgr.get_conversation(uid, curr_cid)
+        except Exception:
+            return []
+        
+        history_str = getattr(conversation, "history", "") or ""
+        if not history_str:
+            return []
+        
+        try:
+            history = json.loads(history_str)
+        except Exception:
+            return []
+        
+        if not isinstance(history, list):
+            return []
+        
+        messages = []
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+            role = item.get("role")
+            content = item.get("content")
+            if role not in ("system", "user", "assistant"):
+                continue
+            if not isinstance(content, str):
+                continue
+            messages.append({"role": role, "content": content})
+        
+        limit = max_turns * 2
+        if limit > 0:
+            messages = messages[-limit:]
+        
+        return messages
+    
+    async def _append_command_llm_context(self, event: AstrMessageEvent, user_text: str, assistant_text: str):
+        if not self.config.get("enable_command_context", False):
+            return
+        
+        max_turns = self.config.get("command_context_max_turns", 10)
+        try:
+            max_turns = int(max_turns)
+        except Exception:
+            max_turns = 10
+        
+        if max_turns <= 0:
+            return
+        
+        uid = event.unified_msg_origin
+        try:
+            conv_mgr = self.context.conversation_manager
+            curr_cid = await conv_mgr.get_curr_conversation_id(uid)
+            if not curr_cid:
+                curr_cid = await conv_mgr.new_conversation(uid, content=[])
+            conversation = await conv_mgr.get_conversation(uid, curr_cid)
+        except Exception:
+            return
+        
+        history_str = getattr(conversation, "history", "") or ""
+        history = []
+        if history_str:
+            try:
+                history = json.loads(history_str)
+            except Exception:
+                history = []
+        
+        if not isinstance(history, list):
+            history = []
+        
+        if user_text:
+            history.append({"role": "user", "content": user_text})
+        if assistant_text:
+            history.append({"role": "assistant", "content": assistant_text})
+        
+        history = [h for h in history if isinstance(h, dict)]
+        limit = max_turns * 2
+        if limit > 0 and len(history) > limit:
+            history = history[-limit:]
+        
+        try:
+            await conv_mgr.update_conversation(uid, curr_cid, history=history)
+        except Exception:
+            return
 
     async def initialize(self):
         """插件初始化"""
@@ -370,15 +473,18 @@ $message
         try:
             logger.info(f"[JudgePlugin] 使用 {model_type} (提供商: {provider_id}, 模型: {model_name or '默认'}) 回答问题")
             
+            context_messages = await self._get_command_llm_context(event)
+            
             # 调用模型
             response = await provider.text_chat(
                 prompt=question,
-                context=[],
+                context=context_messages,
                 system_prompt=system_prompt,
                 model=model_name if model_name else None
             )
             
             answer = response.completion_text
+            await self._append_command_llm_context(event, question, answer)
             
             yield event.plain_result(f"""{model_type} 回答
 ━━━━━━━━━━━━━━━━━━━━
@@ -550,15 +656,18 @@ $message
             
             logger.info(f"[JudgePlugin] 智能选择 {model_type} (提供商: {provider_id}, 模型: {model_name or '默认'}) 回答问题")
             
+            context_messages = await self._get_command_llm_context(event)
+            
             # 调用选定的模型
             response = await provider.text_chat(
                 prompt=question,
-                context=[],
+                context=context_messages,
                 system_prompt=system_prompt,
                 model=model_name if model_name else None
             )
             
             answer = response.completion_text
+            await self._append_command_llm_context(event, question, answer)
             
             yield event.plain_result(f"""{model_type} 智能回答
 ━━━━━━━━━━━━━━━━━━━━
