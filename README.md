@@ -249,7 +249,7 @@
 ## 开发者信息
 
 - **插件名称**: astrbot_plugin_judge
-- **版本**: 1.0.0
+- **版本**: 1.0.2
 - **作者**: HEI
 - **仓库**: https://github.com/AstrBotDevs/astrbot_plugin_judge
 
