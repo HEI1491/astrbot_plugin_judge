@@ -1,10 +1,9 @@
-from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event import AstrMessageEvent
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
 
 
 class JudgeHooksMixin:
-    @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         if not self.config.get("enable", True):
             return
@@ -107,7 +106,6 @@ class JudgeHooksMixin:
         except Exception as e:
             logger.error(f"[JudgePlugin] 判断过程出错: {e}")
 
-    @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, resp):
         if not self.config.get("enable", True):
             return
@@ -156,4 +154,3 @@ class JudgeHooksMixin:
                 "cb_pool_fallback": pending.get("cb_pool_fallback"),
             }
         )
-

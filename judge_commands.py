@@ -1,9 +1,8 @@
-from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event import AstrMessageEvent
 from astrbot.api import logger
 
 
 class JudgeCommandsMixin:
-    @filter.command("judge_status", alias={"状态", "status"})
     async def judge_status(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_status"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -50,7 +49,6 @@ class JudgeCommandsMixin:
 
         yield event.plain_result("\n".join(lines))
 
-    @filter.command("judge_stats", alias={"统计", "stats"})
     async def judge_stats(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_stats"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -119,7 +117,6 @@ class JudgeCommandsMixin:
 
         yield event.plain_result("\n".join(lines))
 
-    @filter.command("judge_lock", alias={"锁定", "lock", "锁", "锁模型"})
     async def judge_lock(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_lock"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -154,7 +151,6 @@ class JudgeCommandsMixin:
             f"✅ 已锁定: scope={scope}, pool={pool or '不限制'}, turns={turns}, provider={provider_id or '不限制'}, model={model_name or '默认'}"
         )
 
-    @filter.command("judge_unlock", alias={"解锁", "unlock", "解"})
     async def judge_unlock(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_unlock"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -162,7 +158,6 @@ class JudgeCommandsMixin:
         existed = self._clear_lock(event)
         yield event.plain_result("✅ 已解锁" if existed else "当前会话未设置锁定")
 
-    @filter.command("judge_lock_status", alias={"锁定状态", "lock_status", "锁状态"})
     async def judge_lock_status(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_lock_status"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -189,7 +184,6 @@ class JudgeCommandsMixin:
         ]
         yield event.plain_result("\n".join(lines))
 
-    @filter.command("judge_test", alias={"判定"})
     async def judge_test(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_test"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -217,7 +211,6 @@ class JudgeCommandsMixin:
         except Exception as e:
             yield event.plain_result(f"测试失败: {e}")
 
-    @filter.command("ask_high", alias={"高智商", "deep", "大"})
     async def ask_high_iq(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "ask_high"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -253,7 +246,6 @@ class JudgeCommandsMixin:
         ):
             yield result
 
-    @filter.command("ask_fast", alias={"快速", "quick", "小"})
     async def ask_fast(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "ask_fast"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -289,7 +281,6 @@ class JudgeCommandsMixin:
         ):
             yield result
 
-    @filter.command("ask_smart", alias={"智能问答", "smart", "问"})
     async def ask_smart(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "ask_smart"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -404,7 +395,6 @@ class JudgeCommandsMixin:
             logger.error(f"[JudgePlugin] 智能问答调用失败: {e}")
             yield event.plain_result(f"❌ 调用失败: {e}")
 
-    @filter.command("judge_health", alias={"ping", "health", "测试", "test_llm", "健康"})
     async def judge_health(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_health"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -497,7 +487,6 @@ class JudgeCommandsMixin:
 
         yield event.plain_result("\n".join(output_lines))
 
-    @filter.command("judge_explain", alias={"解释", "explain", "路由解释"})
     async def judge_explain(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_explain"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -545,7 +534,6 @@ class JudgeCommandsMixin:
 
         yield event.plain_result("\n".join(lines))
 
-    @filter.command("judge_rule", alias={"规则", "rule", "路由规则"})
     async def judge_rule(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_rule"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -620,7 +608,6 @@ class JudgeCommandsMixin:
 
         yield event.plain_result("❌ 未知操作, 仅支持 add/del/list")
 
-    @filter.command("judge_dryrun", alias={"模拟", "dryrun", "模拟路由"})
     async def judge_dryrun(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_dryrun"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -669,4 +656,3 @@ class JudgeCommandsMixin:
             lines.append("🔌 **断路器**: 原 Provider 熔断, 已自动切换")
 
         yield event.plain_result("\n".join(lines))
-
