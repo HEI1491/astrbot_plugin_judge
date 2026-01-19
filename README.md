@@ -22,12 +22,44 @@
 - 路由解释: 新增 `/judge_explain` 输出最近一次路由命中原因/策略/预算/锁定等
 - 稳定性增强: 失败熔断(断路器) + 自动避开不可用模型,提升线上可用性
 - 判定更精细: 重构复杂度判断提示词模板,按“成本-收益”更准确区分 HIGH/FAST
+- 动态规则管理: 新增 `/judge_rule` 支持在线添加/删除/查看自定义关键词规则(无需改代码)
+- 模拟路由测试: 新增 `/judge_dryrun` 模拟消息的全链路路由过程(含ACL/规则/策略/预算/锁定)但不消耗Token
 
 ## 工作原理
 
 ```
 用户消息 → on_llm_request钩子 → 判断模型分析 → 选择目标提供商 → 修改请求 → 继续执行
 ```
+
+## 模块架构(便于二次开发)
+
+插件采用“按职责拆分 + mixin 组装”的方式组织代码，避免 main.py 变成巨型文件。每个模块只做一件事，新增功能时优先找到对应职责文件改动。
+
+### 模块职责
+
+| 文件 | 职责 |
+| --- | --- |
+| `main.py` | 入口与装配：初始化运行时状态、组装各 mixin、初始化配置 |
+| `judge_hooks.py` | 框架钩子：`on_llm_request/on_llm_response` 串联判定→策略→路由→统计 |
+| `judge_decider.py` | 复杂度判定：规则预判/缓存/判断模型/fallback，输出 (HIGH/FAST, source, reason) |
+| `judge_router.py` | 路由选择：池策略应用、provider/model 选择、断路器熔断与 fallback |
+| `judge_llm.py` | LLM 调用：provider 适配与统一调用入口(命令调用与缓存复用) |
+| `judge_rules.py` | 内置规则：关键词/长度/代码块等快速判定 + 动态规则优先级 |
+| `judge_acl.py` | ACL 与策略：会话/群/用户 key 解析、黑白名单、模型池策略(仅快/仅高) |
+| `judge_budget.py` | 预算控制：预算模式、override、触发概率计算 |
+| `judge_lock.py` | 会话锁：锁定池/provider/model，按轮数消耗与 TTL 过期 |
+| `judge_context.py` | 命令上下文：从 conversation_manager 读取/写入历史对话 |
+| `judge_stats.py` | 统计存储：计数器与记录队列(内存态) |
+| `judge_commands.py` | 指令入口：所有 `/judge_*` 与 `/ask_*` 命令实现 |
+| `judge_utils.py` | 通用工具：参数提取、文本归一化、TTL 缓存、时间与进度条 |
+| `judge_config.py` | 配置归一化：启动时把配置修正为可用形态 |
+
+### 常见扩展点
+
+- 新增一个指令：在 `judge_commands.py` 添加新命令函数，尽量复用 `judge_decider/judge_router/judge_llm` 的已有能力
+- 新增复杂度判定规则：在 `judge_rules.py` 增加规则，优先保持“快速可解释”，避免引入重依赖
+- 新增路由策略/兜底：在 `judge_router.py` 扩展选择逻辑(必要时配合 `judge_acl.py` 增加策略入口)
+- 新增统计维度：在 `judge_hooks.py` 写入记录/计数，在 `judge_stats.py` 维护存储结构，在 `judge_commands.py` 展示
 
 ## 行为说明(运营/体验)
 
@@ -128,6 +160,8 @@
 | `stats_max_records` | 统计记录最大条数 | 否 | `200` |
 | `enable_session_lock` | 启用会话锁定/临时覆盖 | 否 | `true` |
 | `session_lock_ttl_seconds` | 会话锁定TTL(秒) | 否 | `3600` |
+| `custom_high_keywords` | 自定义高智商关键词列表 | 否 | `[]` |
+| `custom_fast_keywords` | 自定义快速关键词列表 | 否 | `[]` |
 | `custom_judge_prompt` | 自定义判断提示词 | 否 | 内置提示词 |
 
 ### 配置示例
@@ -201,7 +235,7 @@
 | `/大 <问题>` | 🧠 使用高智商模型回答(最简短) |
 | `/小 <问题>` | ⚡ 使用快速模型回答(最简短) |
 | `/问 <问题>` | 🤖 智能选择模型回答(最简短) |
-| `/测试` | 🔍 测试所有配置的提供商是否活跃 |
+| `/测试` | 🏥 查看LLM提供商健康度与断路器状态 |
 
 ### 完整指令
 
@@ -218,6 +252,8 @@
 | `/ask_fast <问题>` | `/快速`, `/quick`, `/小` | 使用快速模型直接回答问题 |
 | `/ask_smart <问题>` | `/智能问答`, `/smart`, `/问` | 智能选择模型回答问题 |
 | `/judge_health` | `/测试`, `/test_llm`, `/ping` | 查看LLM提供商健康度与断路器状态 |
+| `/judge_rule` | `/规则`, `/rule` | 动态管理自定义判断关键词(add/del/list) |
+| `/judge_dryrun` | `/模拟`, `/dryrun` | 模拟路由过程,不消耗Token |
 
 ### 使用示例
 
@@ -234,7 +270,7 @@
 /问 请解释一下机器学习和深度学习的区别
 ```
 
-**测试所有提供商是否活跃**:
+**查看LLM提供商健康度**:
 ```
 /测试
 ```
@@ -347,9 +383,9 @@
 ## 开发者信息
 
 - **插件名称**: astrbot_plugin_judge
-- **版本**: 1.3.1
+- **版本**: 1.4.0
 - **作者**: HEI
-- **仓库**: https://github.com/AstrBotDevs/astrbot_plugin_judge
+- **仓库**: https://github.com/HEI1491/astrbot_plugin_judge
 
 ## 许可证
 

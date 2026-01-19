@@ -22,6 +22,7 @@
     "high_iq_provider_ids": {
         "description": "高智商模型提供商列表",
         "type": "list",
+        "items": { "type": "string" },
         "default": [],
         "hint": "用于处理复杂问题的模型提供商ID列表,支持配置多个。插件会随机选择一个使用"
     },
@@ -125,18 +126,21 @@
     "high_iq_models": {
         "description": "高智商模型名称列表",
         "type": "list",
+        "items": { "type": "string" },
         "default": [],
         "hint": "与提供商列表一一对应的模型名称。如 ['gpt-4o', 'claude-3-opus']。留空则使用提供商默认模型"
     },
     "fast_provider_ids": {
         "description": "快速模型提供商列表",
         "type": "list",
+        "items": { "type": "string" },
         "default": [],
         "hint": "用于处理简单问题的模型提供商ID列表,支持配置多个。插件会随机选择一个使用"
     },
     "fast_models": {
         "description": "快速模型名称列表",
         "type": "list",
+        "items": { "type": "string" },
         "default": [],
         "hint": "与提供商列表一一对应的模型名称。如 ['gpt-4o-mini', 'claude-3-haiku']。留空则使用提供商默认模型"
     },
@@ -150,36 +154,42 @@
     "whitelist": {
         "description": "白名单",
         "type": "list",
+        "items": { "type": "string" },
         "default": [],
         "hint": "只对白名单中的会话/群组/用户启用智能路由,留空表示对所有会话启用"
     },
     "blacklist": {
         "description": "黑名单",
         "type": "list",
+        "items": { "type": "string" },
         "default": [],
         "hint": "黑名单中的会话/群组/用户不启用智能路由"
     },
     "router_whitelist": {
         "description": "路由白名单(仅自动路由)",
         "type": "list",
+        "items": { "type": "string" },
         "default": [],
         "hint": "仅对自动路由(on_llm_request)生效;为空表示不额外限制"
     },
     "router_blacklist": {
         "description": "路由黑名单(仅自动路由)",
         "type": "list",
+        "items": { "type": "string" },
         "default": [],
         "hint": "仅对自动路由(on_llm_request)生效"
     },
     "command_whitelist": {
         "description": "指令白名单(仅插件指令)",
         "type": "list",
+        "items": { "type": "string" },
         "default": [],
         "hint": "仅对插件指令(/大 /小 /问 /judge_*)生效;为空表示不额外限制"
     },
     "command_blacklist": {
         "description": "指令黑名单(仅插件指令)",
         "type": "list",
+        "items": { "type": "string" },
         "default": [],
         "hint": "仅对插件指令(/大 /小 /问 /judge_*)生效"
     },
@@ -192,12 +202,14 @@
     "fast_only_list": {
         "description": "仅允许快速模型列表",
         "type": "list",
+        "items": { "type": "string" },
         "default": [],
         "hint": "匹配到的会话/群/用户将只允许快速模型(会阻止 /大)"
     },
     "high_only_list": {
         "description": "仅允许高智商模型列表",
         "type": "list",
+        "items": { "type": "string" },
         "default": [],
         "hint": "匹配到的会话/群/用户将只允许高智商模型(会阻止 /小)"
     },
@@ -268,6 +280,20 @@
         "type": "int",
         "default": 3600,
         "hint": "超过该时间锁定自动失效"
+    },
+    "custom_high_keywords": {
+        "description": "自定义高智商关键词(列表)",
+        "type": "list",
+        "items": { "type": "string" },
+        "default": [],
+        "hint": "列表中的词出现即判为 HIGH(优先级高于内置规则),例如: ['深度学习','微积分']"
+    },
+    "custom_fast_keywords": {
+        "description": "自定义快速关键词(列表)",
+        "type": "list",
+        "items": { "type": "string" },
+        "default": [],
+        "hint": "列表中的词出现即判为 FAST(优先级高于内置规则与高智商关键词),例如: ['不需要代码','只是问问']"
     },
     "custom_judge_prompt": {
         "description": "自定义判断提示词",
