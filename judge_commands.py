@@ -662,11 +662,8 @@ class JudgeCommandsMixin:
             return
         
         try:
-            # 尝试重新加载配置（具体行为依赖于 AstrBot 框架是否实时更新了 self.config）
-            # 这里至少重新执行一次规范化逻辑
             if hasattr(self, "_normalize_config"):
                 self._normalize_config()
             yield event.plain_result("✅ 插件配置已重载 (Config Normalized)")
         except Exception as e:
             yield event.plain_result(f"❌ 重载失败: {e}")
-
