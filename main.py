@@ -1,5 +1,5 @@
 """
-AstrBot 智能路由判断插件
+AstrBot 智能LLM判断插件
 根据用户消息复杂度,智能选择高智商模型或快速模型进行回答
 """
 
@@ -54,7 +54,7 @@ class JudgePlugin(
     JudgeHooksMixin,
     Star,
 ):
-    """智能路由判断插件"""
+    """智能LLM判断插件"""
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -100,7 +100,7 @@ $message
 
     async def initialize(self):
         """插件初始化"""
-        logger.info("[JudgePlugin] 智能路由判断插件正在初始化...")
+        logger.info("[JudgePlugin] 智能LLM判断插件正在初始化...")
         try:
             self._normalize_config()
         except Exception:
@@ -141,7 +141,7 @@ $message
 
     async def terminate(self):
         """插件销毁"""
-        logger.info("[JudgePlugin] 智能路由判断插件已停止")
+        logger.info("[JudgePlugin] 智能LLM判断插件已停止")
 
 
 @filter.on_llm_request()

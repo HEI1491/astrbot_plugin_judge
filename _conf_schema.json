@@ -1,6 +1,6 @@
 {
     "enable": {
-        "description": "是否启用智能路由判断",
+        "description": "是否启用智能LLM判断",
         "type": "bool",
         "default": true,
         "hint": "启用后,插件会自动分析消息复杂度并选择合适的模型"
