@@ -1,6 +1,6 @@
 name: astrbot_plugin_judge
 display_name: 智能LLM判断
-desc: QQ信息自判断！还在为QQ用户问出有脑子/没脑子的问题而烦恼吗，使用LLM大模型判断，是否调用大模型回答问题，或调用小模型回答日常对话
+desc: 根据用户消息复杂度,智能选择高智商模型或快速模型进行回答
 version: 1.4.0
 author: HEI
 repo: https://github.com/HEI1491/astrbot_plugin_judge
