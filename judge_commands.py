@@ -1,5 +1,6 @@
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api import logger
+import asyncio
 import time
 
 
@@ -433,56 +434,95 @@ class JudgeCommandsMixin:
 
         output_lines = ["🏥 **LLM 健康度报告**", "━━━━━━━━━━━━━━━━━━━━━━━━"]
 
-        for (pid, model), tags in unique_targets.items():
-            provider = self.context.get_provider_by_id(pid)
-            model_disp = model if model else "默认"
-            tags_disp = " ".join([f"`{t}`" for t in tags])
+        timeout_s = self.config.get("health_check_timeout_seconds", 8)
+        try:
+            timeout_s = float(timeout_s)
+        except Exception:
+            timeout_s = 8.0
+        if timeout_s <= 0:
+            timeout_s = 8.0
 
-            if not provider:
-                output_lines.append(f"🔴 **{pid}** ({model_disp})")
-                output_lines.append(f"   └─ 🏷️ {tags_disp} | ❌ 提供商不存在")
-                continue
+        max_concurrency = self.config.get("health_check_max_concurrency", 3)
+        try:
+            max_concurrency = int(max_concurrency)
+        except Exception:
+            max_concurrency = 3
+        if max_concurrency <= 0:
+            max_concurrency = 3
 
-            cb_key = f"{pid}:{model}"
-            cb = self._circuit_breakers.get(cb_key, {})
-            is_open = cb.get("state") == "open"
-            fail_count = cb.get("fail_count", 0)
+        sem = asyncio.Semaphore(max_concurrency)
 
-            status_icon = "🟢"
-            status_text = "正常"
-            latency_text = "-"
+        async def _probe(pid: str, model: str, tags: list):
+            async with sem:
+                provider = self.context.get_provider_by_id(pid)
+                model_disp = model if model else "默认"
+                tags_disp = " ".join([f"`{t}`" for t in tags])
 
-            try:
-                t0 = time.time()
-                await self._provider_text_chat(
-                    provider,
-                    prompt="OK",
-                    context_messages=[],
-                    system_prompt="Reply OK",
-                    model_name=model,
-                )
-                latency = time.time() - t0
-                latency_text = f"{latency:.2f}s"
+                if not provider:
+                    return [f"🔴 **{pid}** ({model_disp})", f"   └─ 🏷️ {tags_disp} | ❌ 提供商不存在"]
 
-                if is_open:
-                    status_icon = "🟡"
-                    status_text = "恢复中"
-                self._circuit_breakers[cb_key] = {"state": "closed", "fail_count": 0, "last_fail": 0}
+                cb_key = f"{pid}:{model}"
+                cb = self._circuit_breakers.get(cb_key, {})
+                is_open = cb.get("state") == "open"
+                fail_count = cb.get("fail_count", 0)
 
-            except Exception as e:
-                status_icon = "🔴"
-                status_text = f"失败: {str(e)[:15]}..."
+                status_icon = "🟢"
+                status_text = "正常"
+                latency_text = "-"
 
-                now = time.time()
-                new_fail = fail_count + 1
-                state = "open" if new_fail >= 3 else "closed"
-                self._circuit_breakers[cb_key] = {"state": state, "fail_count": new_fail, "last_fail": now}
-                if state == "open":
-                    status_icon = "🚫"
-                    status_text = "已熔断"
+                try:
+                    t0 = time.time()
+                    await asyncio.wait_for(
+                        self._provider_text_chat(
+                            provider,
+                            prompt="OK",
+                            context_messages=[],
+                            system_prompt="Reply OK",
+                            model_name=model,
+                        ),
+                        timeout=timeout_s,
+                    )
+                    latency = time.time() - t0
+                    latency_text = f"{latency:.2f}s"
 
-            output_lines.append(f"{status_icon} **{pid}** ({model_disp})")
-            output_lines.append(f"   └─ 🏷️ {tags_disp} | ⏱️ {latency_text} | 📊 {status_text}")
+                    if is_open:
+                        status_icon = "🟡"
+                        status_text = "恢复中"
+                    self._circuit_breakers[cb_key] = {"state": "closed", "fail_count": 0, "last_fail": 0}
+
+                except asyncio.TimeoutError:
+                    status_icon = "🟠"
+                    status_text = f"超时>{int(timeout_s)}s"
+
+                    now = time.time()
+                    new_fail = fail_count + 1
+                    state = "open" if new_fail >= 3 else "closed"
+                    self._circuit_breakers[cb_key] = {"state": state, "fail_count": new_fail, "last_fail": now}
+                    if state == "open":
+                        status_icon = "🚫"
+                        status_text = "已熔断(超时)"
+
+                except Exception as e:
+                    status_icon = "🔴"
+                    status_text = f"失败: {str(e)[:15]}..."
+
+                    now = time.time()
+                    new_fail = fail_count + 1
+                    state = "open" if new_fail >= 3 else "closed"
+                    self._circuit_breakers[cb_key] = {"state": state, "fail_count": new_fail, "last_fail": now}
+                    if state == "open":
+                        status_icon = "🚫"
+                        status_text = "已熔断"
+
+                return [
+                    f"{status_icon} **{pid}** ({model_disp})",
+                    f"   └─ 🏷️ {tags_disp} | ⏱️ {latency_text} | 📊 {status_text}",
+                ]
+
+        tasks = [_probe(pid, model, tags) for (pid, model), tags in unique_targets.items()]
+        results = await asyncio.gather(*tasks)
+        for lines in results:
+            output_lines.extend(lines)
 
         yield event.plain_result("\n".join(output_lines))
 
