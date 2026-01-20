@@ -144,12 +144,12 @@ $message
         logger.info("[JudgePlugin] 智能LLM判断插件已停止")
 
     @filter.on_llm_request()
-    async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
+    async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest, *args, **kwargs):
         """LLM 请求前：按复杂度/策略/预算选择模型提供商与模型"""
         await JudgeHooksMixin.on_llm_request(self, event, req)
 
     @filter.on_llm_response()
-    async def on_llm_response(self, event: AstrMessageEvent, resp):
+    async def on_llm_response(self, event: AstrMessageEvent, resp, *args, **kwargs):
         """LLM 响应后：统计打点与断路器状态更新"""
         await JudgeHooksMixin.on_llm_response(self, event, resp)
 
@@ -230,3 +230,10 @@ $message
         """模拟路由过程（不消耗 Token）"""
         async for item in JudgeCommandsMixin.judge_dryrun(self, event):
             yield item
+
+    @filter.command("judge_reload", alias={"重载", "reload"})
+    async def judge_reload(self, event: AstrMessageEvent, *args, **kwargs):
+        """重载配置文件"""
+        async for item in JudgeCommandsMixin.judge_reload(self, event):
+            yield item
+
