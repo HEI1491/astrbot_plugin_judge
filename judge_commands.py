@@ -1,5 +1,6 @@
-from astrbot.api.event import AstrMessageEvent
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api import logger
+import time
 
 
 class JudgeCommandsMixin:
@@ -401,8 +402,6 @@ class JudgeCommandsMixin:
             return
 
         yield event.plain_result("🏥 正在进行全量健康检查...")
-
-        import time
 
         targets = []
         judge_pid = self.config.get("judge_provider_id", "")

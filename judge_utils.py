@@ -1,4 +1,5 @@
 import re
+import time
 from astrbot.api.event import AstrMessageEvent
 
 
@@ -48,26 +49,26 @@ class JudgeUtilsMixin:
         now = self._now_ts()
         expires_at = now + ttl_seconds if ttl_seconds and ttl_seconds > 0 else 0
 
-        expired_keys = []
-        if ttl_seconds and ttl_seconds > 0:
-            for k, (exp, _) in list(cache.items()):
-                if exp and exp < now:
-                    expired_keys.append(k)
-        for k in expired_keys:
-            cache.pop(k, None)
-
-        while len(cache) >= max_entries:
-            try:
-                oldest_key = next(iter(cache))
-                cache.pop(oldest_key, None)
-            except Exception:
-                break
+        # 仅在写入且达到容量限制时，才进行批量过期清理（避免每次写入都 O(N)）
+        # 或者随机采样清理（此处简化为容量满时清理）
+        if len(cache) >= max_entries:
+            # 1. 先清理已过期的
+            expired_keys = [k for k, (exp, _) in cache.items() if exp and exp < now]
+            for k in expired_keys:
+                cache.pop(k, None)
+            
+            # 2. 如果还满，按 LRU (dict 默认顺序) 淘汰最老的
+            while len(cache) >= max_entries:
+                try:
+                    oldest_key = next(iter(cache))
+                    cache.pop(oldest_key, None)
+                except Exception:
+                    break
 
         cache[key] = (expires_at, value)
 
     def _now_ts(self) -> int:
         try:
-            import time
             return int(time.time())
         except Exception:
             return 0

@@ -1,12 +1,21 @@
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger
+import time
 
 
 class JudgeHooksMixin:
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         if not self.config.get("enable", True):
             return
+
+        # 1. 主动清理过期的 pending 记录 (避免内存泄漏)
+        #    假设 TTL = 300秒 (5分钟内未响应视为超时)
+        now = self._now_ts()
+        expired = [mid for mid, data in self._llm_pending.items() 
+                   if now - data.get("ts_start", now) > 300]
+        for mid in expired:
+            self._llm_pending.pop(mid, None)
 
         user_message = event.message_str
         if not user_message or len(user_message.strip()) == 0:
@@ -84,10 +93,9 @@ class JudgeHooksMixin:
             msg_id = getattr(msg_obj, "message_id", "") if msg_obj else ""
             if msg_id:
                 try:
-                    import time
-
                     self._llm_pending[msg_id] = {
                         "t0": time.perf_counter(),
+                        "ts_start": self._now_ts(),  # 用于 TTL 清理
                         "decision": decision,
                         "judge_source": judge_source,
                         "judge_reason": judge_reason,
@@ -119,8 +127,6 @@ class JudgeHooksMixin:
         if not isinstance(pending, dict):
             return
         try:
-            import time
-
             elapsed_ms = (time.perf_counter() - float(pending.get("t0", 0) or 0)) * 1000
         except Exception:
             elapsed_ms = 0
