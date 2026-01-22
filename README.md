@@ -4,7 +4,7 @@
 
 [![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-purple)](https://github.com/Soulter/AstrBot)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Python](https://img.shields.io/badge/python-3.8+-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.6+-blue)](https://www.python.org/)
 
 **让每一分Token都花在刀刃上**
 
@@ -25,16 +25,20 @@
 
 ## 🛠️ 指令列表
 
-插件安装后即可自动生效。以下为管理员管理指令：
+插件安装后即可自动生效。以下为指令列表（支持别名）：
 
 | 指令 | 说明 | 示例 |
 | :--- | :--- | :--- |
-| `/judge status` | 查看当前统计与状态 | `/judge status` |
-| `/judge on` | 开启插件 | `/judge on` |
-| `/judge off` | 关闭插件 | `/judge off` |
-| `/judge clean` | 清理所有缓存 | `/judge clean` |
-| `/judge reload` | 重载配置文件 | `/judge reload` |
-| `/judge debug` | 切换调试模式 | `/judge debug` |
+| `/judge_status` | 查看插件状态 | `/judge_status` |
+| `/judge_stats` | 查看路由与 LLM 统计 | `/judge_stats` |
+| `/judge_health` | 探测提供商健康度/断路器 | `/judge_health` |
+| `/judge_explain` | 解释最近一次路由决策 | `/judge_explain` |
+| `/judge_rule` | 增删列出自定义关键词规则 | `/judge_rule list` |
+| `/judge_dryrun` | 模拟一段消息将如何路由 | `/judge_dryrun 帮我写个代码` |
+| `/judge_reload` | 重载并归一化配置 | `/judge_reload` |
+| `/ask_high` | 强制走高智商池 | `/ask_high` |
+| `/ask_fast` | 强制走快速池 | `/ask_fast` |
+| `/ask_smart` | 智能判定后路由 | `/ask_smart` |
 
 > 💡 **提示**：普通用户无需输入任何指令，正常对话即可享受智能路由服务。
 
@@ -46,29 +50,36 @@
 
 | 配置项 | 说明 | 推荐值 |
 | :--- | :--- | :--- |
-| `judge_provider` | **[必填]** 用于判断意图的模型ID | `gpt-4o-mini`, `gemini-1.5-flash` |
-| `high_iq_providers` | **[必填]** 高智商模型提供商列表 | `openai`, `anthropic` |
-| `fast_providers` | **[必填]** 快速模型提供商列表 | `openai`, `google` |
-| `complexity_threshold` | 触发高智商模型的复杂度阈值 (1-10) | `7` |
+| `judge_provider_id` | **[必填]** 判断模型提供商ID | `openai` / `anthropic` 等 |
+| `judge_model` | 判断模型名称(可选) | `gpt-4o-mini` 等 |
+| `high_iq_provider_ids` | 高智商模型提供商列表 | `["openai","anthropic"]` |
+| `high_iq_models` | 与高智商提供商一一对应的模型名列表 | `["gpt-4o","claude-3-opus"]` |
+| `fast_provider_ids` | 快速模型提供商列表 | `["openai","google"]` |
+| `fast_models` | 与快速提供商一一对应的模型名列表 | `["gpt-4o-mini","gemini-1.5-flash"]` |
+
+> 建议优先使用更稳健的配对配置：`high_iq_routes` / `fast_routes`（例如 `"openai:gpt-4o"`），避免 provider/models 两个列表的索引对齐脆弱问题。
 
 ### 高级功能
 
 | 配置项 | 说明 | 默认值 |
 | :--- | :--- | :--- |
-| `enable_random_high_iq` | 是否在多个高智商模型间随机选择 | `true` |
-| `max_budget_daily` | 每日预算上限 (USD) | `1.0` |
-| `cache_ttl` | 判断结果缓存时间 (秒) | `3600` |
+| `enable_high_iq_polling` | 高智商池是否轮询选择 | `true` |
+| `enable_rule_prejudge` | 启用规则预判(减少判断模型调用) | `true` |
+| `enable_decision_cache` | 启用决策缓存 | `true` |
+| `decision_cache_ttl_seconds` | 决策缓存 TTL(秒) | `600` |
+| `enable_answer_cache` | 启用命令回答缓存 | `false` |
+| `answer_cache_ttl_seconds` | 回答缓存 TTL(秒) | `300` |
 
 ## ❓ 常见问题
 
 **Q: 为什么插件没有生效？**
-> A: 请确保 `/judge status` 显示为 "运行中"，并检查 `judge_provider` 是否配置了有效的模型ID。
+> A: 请先用 `/judge_status` 查看状态，并检查 `judge_provider_id` 是否已配置。
 
 **Q: 如何自定义判断逻辑？**
-> A: 您可以在配置文件中修改 `judge_prompt`，调整AI的判断标准。
+> A: 可通过配置 `custom_high_keywords` / `custom_fast_keywords` 或使用 `/judge_rule` 命令动态增删关键词规则。
 
 **Q: 预算耗尽了怎么办？**
-> A: 插件会自动停止调用高智商模型，转为使用快速模型或默认回复。可以通过 `/judge reload` 重置（如果修改了限额）。
+> A: 插件会在预算控制启用时按模式降级为 FAST；可调整预算相关配置后使用 `/judge_reload` 使其生效。
 
 ---
 

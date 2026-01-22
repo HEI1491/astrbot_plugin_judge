@@ -1,26 +1,22 @@
 import re
 import time
+from collections import OrderedDict
+from functools import lru_cache
 from astrbot.api.event import AstrMessageEvent
 
 
-class JudgeUtilsMixin:
-    def _get_command_regexes(self, command_patterns: list) -> list:
-        key = tuple(str(p) for p in command_patterns) if isinstance(command_patterns, list) else tuple()
-        cache = getattr(self, "_command_regex_cache", None)
-        if cache is None:
-            cache = {}
-            setattr(self, "_command_regex_cache", cache)
-        compiled = cache.get(key)
-        if compiled is not None:
-            return compiled
-        compiled = []
-        for pattern in key:
-            compiled.append(re.compile(rf"^[^\w\s]*{re.escape(pattern)}\s*(.*)$", re.IGNORECASE))
-        cache[key] = compiled
-        return compiled
+@lru_cache(maxsize=256)
+def _compile_command_regexes(command_patterns: tuple) -> tuple:
+    compiled = []
+    for pattern in command_patterns:
+        compiled.append(re.compile(r"^[^\w\s]*%s\s*(.*)$" % re.escape(pattern), re.IGNORECASE))
+    return tuple(compiled)
 
+
+class JudgeUtilsMixin:
     def _extract_command_args(self, message: str, command_patterns: list) -> str:
-        for regex in self._get_command_regexes(command_patterns):
+        key = tuple(str(p) for p in command_patterns) if isinstance(command_patterns, list) else tuple()
+        for regex in _compile_command_regexes(key):
             match = regex.match(message)
             if match:
                 return match.group(1).strip()
@@ -30,12 +26,11 @@ class JudgeUtilsMixin:
         if not isinstance(text, str):
             return ""
         normalized = text.strip().lower()
-        normalized = re.sub(r"\s+", " ", normalized)
         normalized = re.sub(r"[^\w\s\u4e00-\u9fff]+", "", normalized)
         normalized = re.sub(r"\s+", " ", normalized).strip()
         return normalized
 
-    def _cache_get(self, cache: dict, key: str):
+    def _cache_get(self, cache, key: str):
         item = cache.get(key)
         if not item:
             return None
@@ -46,9 +41,14 @@ class JudgeUtilsMixin:
             except Exception:
                 pass
             return None
+        if isinstance(cache, OrderedDict):
+            try:
+                cache.move_to_end(key)
+            except Exception:
+                pass
         return value
 
-    def _cache_set(self, cache: dict, key: str, value, ttl_seconds: int, max_entries: int):
+    def _cache_set(self, cache, key: str, value, ttl_seconds: int, max_entries: int):
         try:
             ttl_seconds = int(ttl_seconds)
         except Exception:
@@ -63,23 +63,30 @@ class JudgeUtilsMixin:
         now = self._now_ts()
         expires_at = now + ttl_seconds if ttl_seconds and ttl_seconds > 0 else 0
 
-        # 仅在写入且达到容量限制时，才进行批量过期清理（避免每次写入都 O(N)）
-        # 或者随机采样清理（此处简化为容量满时清理）
         if len(cache) >= max_entries:
-            # 1. 先清理已过期的
             expired_keys = [k for k, (exp, _) in cache.items() if exp and exp < now]
             for k in expired_keys:
                 cache.pop(k, None)
-            
-            # 2. 如果还满，按 LRU (dict 默认顺序) 淘汰最老的
-            while len(cache) >= max_entries:
-                try:
-                    oldest_key = next(iter(cache))
-                    cache.pop(oldest_key, None)
-                except Exception:
-                    break
+            if isinstance(cache, OrderedDict):
+                while len(cache) >= max_entries:
+                    try:
+                        cache.popitem(last=False)
+                    except Exception:
+                        break
+            else:
+                while len(cache) >= max_entries:
+                    try:
+                        oldest_key = next(iter(cache))
+                        cache.pop(oldest_key, None)
+                    except Exception:
+                        break
 
         cache[key] = (expires_at, value)
+        if isinstance(cache, OrderedDict):
+            try:
+                cache.move_to_end(key)
+            except Exception:
+                pass
 
     def _now_ts(self) -> int:
         try:

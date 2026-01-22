@@ -471,7 +471,7 @@ class JudgeCommandsMixin:
                 latency_text = "-"
 
                 try:
-                    t0 = time.time()
+                    t0 = time.perf_counter()
                     await asyncio.wait_for(
                         self._provider_text_chat(
                             provider,
@@ -482,7 +482,7 @@ class JudgeCommandsMixin:
                         ),
                         timeout=timeout_s,
                     )
-                    latency = time.time() - t0
+                    latency = time.perf_counter() - t0
                     latency_text = f"{latency:.2f}s"
 
                     if is_open:
@@ -631,6 +631,12 @@ class JudgeCommandsMixin:
                 return
             current_list.append(keyword)
             self.config[target_list_key] = current_list
+            try:
+                save_config = getattr(self.config, "save_config", None)
+                if callable(save_config):
+                    save_config()
+            except Exception:
+                logger.exception("[JudgePlugin] 保存配置失败")
             yield event.plain_result(f"✅ 已添加 {kind.upper()} 规则: `{keyword}`")
             return
 
@@ -640,6 +646,12 @@ class JudgeCommandsMixin:
                 return
             current_list.remove(keyword)
             self.config[target_list_key] = current_list
+            try:
+                save_config = getattr(self.config, "save_config", None)
+                if callable(save_config):
+                    save_config()
+            except Exception:
+                logger.exception("[JudgePlugin] 保存配置失败")
             yield event.plain_result(f"✅ 已删除 {kind.upper()} 规则: `{keyword}`")
             return
 

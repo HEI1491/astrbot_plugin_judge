@@ -26,6 +26,13 @@
         "default": [],
         "hint": "用于处理复杂问题的模型提供商ID列表,支持配置多个。插件会随机选择一个使用"
     },
+    "high_iq_routes": {
+        "description": "高智商路由配对(优先)",
+        "type": "list",
+        "items": { "type": "string" },
+        "default": [],
+        "hint": "每项为 provider_id:model 形式(模型可省略)。配置后会优先用于 provider/model 配对,避免索引对齐问题。例如: ['openai:gpt-4o','anthropic:claude-3-opus']"
+    },
     "enable_high_iq_polling": {
         "description": "是否启用高智商模型轮询",
         "type": "bool",
@@ -136,6 +143,13 @@
         "items": { "type": "string" },
         "default": [],
         "hint": "用于处理简单问题的模型提供商ID列表,支持配置多个。插件会随机选择一个使用"
+    },
+    "fast_routes": {
+        "description": "快速路由配对(优先)",
+        "type": "list",
+        "items": { "type": "string" },
+        "default": [],
+        "hint": "每项为 provider_id:model 形式(模型可省略)。配置后会优先用于 provider/model 配对,避免索引对齐问题。例如: ['openai:gpt-4o-mini','google:gemini-1.5-flash']"
     },
     "fast_models": {
         "description": "快速模型名称列表",
@@ -263,6 +277,18 @@
         "default": true,
         "hint": "启用后可使用 /judge_stats 查看路由与LLM调用统计(内存统计,重启清空)"
     },
+    "llm_pending_ttl_seconds": {
+        "description": "LLM pending 记录 TTL(秒)",
+        "type": "int",
+        "default": 300,
+        "hint": "用于匹配 on_llm_request/on_llm_response 的临时记录保留时间,超过会清理以防内存增长"
+    },
+    "llm_pending_cleanup_interval_seconds": {
+        "description": "LLM pending 清理间隔(秒)",
+        "type": "int",
+        "default": 60,
+        "hint": "清理过期 pending 的最小间隔;设置为 0 表示每次请求都清理(不推荐)"
+    },
     "stats_max_records": {
         "description": "统计记录最大条数",
         "type": "int",
@@ -294,6 +320,62 @@
         "items": { "type": "string" },
         "default": [],
         "hint": "列表中的词出现即判为 FAST(优先级高于内置规则与高智商关键词),例如: ['不需要代码','只是问问']"
+    },
+    "simple_keywords_add": {
+        "description": "追加内置 FAST 关键词(列表)",
+        "type": "list",
+        "items": { "type": "string" },
+        "default": [],
+        "hint": "在内置 FAST 关键词基础上追加,例如: ['随便聊聊']"
+    },
+    "simple_keywords_remove": {
+        "description": "移除内置 FAST 关键词(列表)",
+        "type": "list",
+        "items": { "type": "string" },
+        "default": [],
+        "hint": "从内置 FAST 关键词中移除,例如: ['你好']"
+    },
+    "strong_complex_keywords_add": {
+        "description": "追加内置 HIGH 强关键词(列表)",
+        "type": "list",
+        "items": { "type": "string" },
+        "default": [],
+        "hint": "在内置 HIGH 强关键词基础上追加"
+    },
+    "strong_complex_keywords_remove": {
+        "description": "移除内置 HIGH 强关键词(列表)",
+        "type": "list",
+        "items": { "type": "string" },
+        "default": [],
+        "hint": "从内置 HIGH 强关键词中移除"
+    },
+    "weak_complex_keywords_add": {
+        "description": "追加内置弱关键词(列表)",
+        "type": "list",
+        "items": { "type": "string" },
+        "default": [],
+        "hint": "在内置弱关键词基础上追加"
+    },
+    "weak_complex_keywords_remove": {
+        "description": "移除内置弱关键词(列表)",
+        "type": "list",
+        "items": { "type": "string" },
+        "default": [],
+        "hint": "从内置弱关键词中移除"
+    },
+    "weak_need_strong_triggers_add": {
+        "description": "追加弱关键词触发 HIGH 的触发词(列表)",
+        "type": "list",
+        "items": { "type": "string" },
+        "default": [],
+        "hint": "当命中弱关键词且同时命中这些触发词时判为 HIGH"
+    },
+    "weak_need_strong_triggers_remove": {
+        "description": "移除弱关键词触发 HIGH 的触发词(列表)",
+        "type": "list",
+        "items": { "type": "string" },
+        "default": [],
+        "hint": "从内置触发词中移除"
     },
     "custom_judge_prompt": {
         "description": "自定义判断提示词",

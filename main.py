@@ -3,7 +3,7 @@ AstrBot 智能LLM判断插件
 根据用户消息复杂度,智能选择高智商模型或快速模型进行回答
 """
 
-from importlib import import_module, util as importlib_util
+from collections import OrderedDict
 from string import Template
 
 from astrbot.api.event import filter, AstrMessageEvent
@@ -11,28 +11,19 @@ from astrbot.api.star import Context, Star
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger, AstrBotConfig
 
-
-def _import_local(module_basename: str):
-    if __package__:
-        qualified = f"{__package__}.{module_basename}"
-        if importlib_util.find_spec(qualified) is not None:
-            return import_module(qualified)
-    return import_module(module_basename)
-
-
-JudgeUtilsMixin = getattr(_import_local("judge_utils"), "JudgeUtilsMixin")
-JudgeConfigMixin = getattr(_import_local("judge_config"), "JudgeConfigMixin")
-JudgeRulesMixin = getattr(_import_local("judge_rules"), "JudgeRulesMixin")
-JudgeRouterMixin = getattr(_import_local("judge_router"), "JudgeRouterMixin")
-JudgeStatsMixin = getattr(_import_local("judge_stats"), "JudgeStatsMixin")
-JudgeCommandsMixin = getattr(_import_local("judge_commands"), "JudgeCommandsMixin")
-JudgeAclMixin = getattr(_import_local("judge_acl"), "JudgeAclMixin")
-JudgeBudgetMixin = getattr(_import_local("judge_budget"), "JudgeBudgetMixin")
-JudgeLockMixin = getattr(_import_local("judge_lock"), "JudgeLockMixin")
-JudgeContextMixin = getattr(_import_local("judge_context"), "JudgeContextMixin")
-JudgeLlmMixin = getattr(_import_local("judge_llm"), "JudgeLlmMixin")
-JudgeDeciderMixin = getattr(_import_local("judge_decider"), "JudgeDeciderMixin")
-JudgeHooksMixin = getattr(_import_local("judge_hooks"), "JudgeHooksMixin")
+from .judge_utils import JudgeUtilsMixin
+from .judge_config import JudgeConfigMixin
+from .judge_rules import JudgeRulesMixin
+from .judge_router import JudgeRouterMixin
+from .judge_stats import JudgeStatsMixin
+from .judge_commands import JudgeCommandsMixin
+from .judge_acl import JudgeAclMixin
+from .judge_budget import JudgeBudgetMixin
+from .judge_lock import JudgeLockMixin
+from .judge_context import JudgeContextMixin
+from .judge_llm import JudgeLlmMixin
+from .judge_decider import JudgeDeciderMixin
+from .judge_hooks import JudgeHooksMixin
 
 
 class JudgePlugin(
@@ -56,8 +47,8 @@ class JudgePlugin(
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
-        self._decision_cache = {}
-        self._answer_cache = {}
+        self._decision_cache = OrderedDict()
+        self._answer_cache = OrderedDict()
         self._session_locks = {}
         self._stats_records = []
         self._stats_counters = {}
@@ -156,20 +147,12 @@ $message
         logger.info("[JudgePlugin] 智能LLM判断插件已停止")
 
     @filter.on_llm_request()
-    async def on_llm_request(
-        self,
-        event: AstrMessageEvent,
-        req: ProviderRequest,
-        args=None,
-        kwargs=None,
-        rest=None,
-        kwrest=None,
-    ):
+    async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         """LLM 请求前：按复杂度/策略/预算选择模型提供商与模型"""
         await JudgeHooksMixin.on_llm_request(self, event, req)
 
     @filter.on_llm_response()
-    async def on_llm_response(self, event: AstrMessageEvent, resp, args=None, kwargs=None, rest=None, kwrest=None):
+    async def on_llm_response(self, event: AstrMessageEvent, resp):
         """LLM 响应后：统计打点与断路器状态更新"""
         await JudgeHooksMixin.on_llm_response(self, event, resp)
 

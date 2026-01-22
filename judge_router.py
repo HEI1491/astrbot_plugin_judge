@@ -4,41 +4,21 @@ from astrbot.api.event import AstrMessageEvent
 
 
 class JudgeRouterMixin:
-    def _get_provider_model_pair(self, provider_ids, model_names) -> tuple:
-        if not isinstance(provider_ids, list):
-            logger.warning(f"[JudgePlugin] provider_ids 应为列表类型,实际为: {type(provider_ids)}")
-            return ("", "")
-        if not provider_ids:
-            return ("", "")
-        index = random.randint(0, len(provider_ids) - 1)
-        provider_id = provider_ids[index]
-        model_name = ""
-        if isinstance(model_names, list) and len(model_names) > index:
-            model_name = model_names[index]
-        return (provider_id, model_name)
-
-    def _get_high_iq_provider_model(self) -> tuple:
-        provider_ids = self.config.get("high_iq_provider_ids", [])
-        model_names = self.config.get("high_iq_models", [])
-        enable_polling = self.config.get("enable_high_iq_polling", True)
-
-        if not isinstance(provider_ids, list):
-            logger.warning(f"[JudgePlugin] high_iq_provider_ids 应为列表类型,实际为: {type(provider_ids)}")
-            return ("", "")
-        if not provider_ids:
+    def _choose_pair(self, pairs: list, enable_polling: bool = True) -> tuple:
+        if not pairs:
             return ("", "")
         if not enable_polling:
-            provider_id = provider_ids[0]
-            model_name = ""
-            if isinstance(model_names, list) and len(model_names) > 0:
-                model_name = model_names[0]
-            return (provider_id, model_name)
-        return self._get_provider_model_pair(provider_ids, model_names)
+            return pairs[0]
+        return random.choice(pairs)
+
+    def _get_high_iq_provider_model(self) -> tuple:
+        enable_polling = self.config.get("enable_high_iq_polling", True)
+        pairs = self._get_pool_pairs("HIGH")
+        return self._choose_pair(pairs, enable_polling=bool(enable_polling))
 
     def _get_fast_provider_model(self) -> tuple:
-        provider_ids = self.config.get("fast_provider_ids", [])
-        model_names = self.config.get("fast_models", [])
-        return self._get_provider_model_pair(provider_ids, model_names)
+        pairs = self._get_pool_pairs("FAST")
+        return self._choose_pair(pairs, enable_polling=True)
 
     def _apply_pool_policy(self, event: AstrMessageEvent, desired_pool: str) -> tuple:
         policy = self._get_pool_policy(event)
@@ -128,8 +108,13 @@ class JudgeRouterMixin:
         else:
             provider_ids = self.config.get("fast_provider_ids", [])
             model_names = self.config.get("fast_models", [])
-        if not isinstance(provider_ids, list) or not provider_ids:
+        if not isinstance(provider_ids, list):
+            logger.warning(f"[JudgePlugin] provider_ids 应为列表类型,实际为: {type(provider_ids)}")
             return []
+        if not provider_ids:
+            return []
+        if not isinstance(model_names, list):
+            model_names = []
         pairs = []
         for i, provider_id in enumerate(provider_ids):
             if not provider_id:
@@ -184,4 +169,3 @@ class JudgeRouterMixin:
         if cb["fail_count"] >= 3:
             cb["state"] = "open"
         self._circuit_breakers[key] = cb
-
