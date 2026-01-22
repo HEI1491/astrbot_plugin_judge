@@ -4,10 +4,24 @@ from astrbot.api.event import AstrMessageEvent
 
 
 class JudgeUtilsMixin:
+    def _get_command_regexes(self, command_patterns: list) -> list:
+        key = tuple(str(p) for p in command_patterns) if isinstance(command_patterns, list) else tuple()
+        cache = getattr(self, "_command_regex_cache", None)
+        if cache is None:
+            cache = {}
+            setattr(self, "_command_regex_cache", cache)
+        compiled = cache.get(key)
+        if compiled is not None:
+            return compiled
+        compiled = []
+        for pattern in key:
+            compiled.append(re.compile(rf"^[^\w\s]*{re.escape(pattern)}\s*(.*)$", re.IGNORECASE))
+        cache[key] = compiled
+        return compiled
+
     def _extract_command_args(self, message: str, command_patterns: list) -> str:
-        for pattern in command_patterns:
-            regex = rf"^[^\w\s]*{re.escape(pattern)}\s*(.*)$"
-            match = re.match(regex, message, re.IGNORECASE)
+        for regex in self._get_command_regexes(command_patterns):
+            match = regex.match(message)
             if match:
                 return match.group(1).strip()
         return message.strip()
@@ -82,4 +96,3 @@ class JudgeUtilsMixin:
 
     def _session_key(self, event: AstrMessageEvent) -> str:
         return getattr(event, "unified_msg_origin", "") or ""
-

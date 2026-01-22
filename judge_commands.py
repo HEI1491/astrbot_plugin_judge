@@ -1,6 +1,8 @@
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api import logger
+from collections import Counter
 import asyncio
+import datetime
 import time
 
 
@@ -102,8 +104,6 @@ class JudgeCommandsMixin:
 
         records = self._stats_records
         if records:
-            from collections import Counter
-
             reasons = [f"{r.get('judge_source')}:{r.get('judge_reason')}" for r in records if r.get("judge_source")]
             if reasons:
                 top = Counter(reasons).most_common(3)
@@ -551,8 +551,6 @@ class JudgeCommandsMixin:
         provider = record.get("provider_id", "")
         model = record.get("model", "")
         ts = record.get("ts", 0)
-
-        import datetime
 
         time_str = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
 

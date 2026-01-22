@@ -9,13 +9,34 @@ class JudgeHooksMixin:
         if not self.config.get("enable", True):
             return
 
-        # 1. 主动清理过期的 pending 记录 (避免内存泄漏)
-        #    假设 TTL = 300秒 (5分钟内未响应视为超时)
         now = self._now_ts()
-        expired = [mid for mid, data in self._llm_pending.items() 
-                   if now - data.get("ts_start", now) > 300]
-        for mid in expired:
-            self._llm_pending.pop(mid, None)
+        pending_ttl_seconds = self.config.get("llm_pending_ttl_seconds", 300)
+        cleanup_interval_seconds = self.config.get("llm_pending_cleanup_interval_seconds", 60)
+        try:
+            pending_ttl_seconds = int(pending_ttl_seconds)
+        except Exception:
+            pending_ttl_seconds = 300
+        try:
+            cleanup_interval_seconds = int(cleanup_interval_seconds)
+        except Exception:
+            cleanup_interval_seconds = 60
+        if pending_ttl_seconds > 0:
+            last_cleanup = getattr(self, "_llm_pending_last_cleanup_ts", 0) or 0
+            should_cleanup = cleanup_interval_seconds <= 0 or (now - last_cleanup) >= cleanup_interval_seconds
+            if len(self._llm_pending) >= 500:
+                should_cleanup = True
+            if should_cleanup:
+                setattr(self, "_llm_pending_last_cleanup_ts", now)
+                expired = []
+                for mid, data in self._llm_pending.items():
+                    try:
+                        ts_start = int(data.get("ts_start", now) or now)
+                    except Exception:
+                        ts_start = now
+                    if now - ts_start > pending_ttl_seconds:
+                        expired.append(mid)
+                for mid in expired:
+                    self._llm_pending.pop(mid, None)
 
         user_message = event.message_str
         if not user_message or len(user_message.strip()) == 0:

@@ -3,39 +3,36 @@ AstrBot 智能LLM判断插件
 根据用户消息复杂度,智能选择高智商模型或快速模型进行回答
 """
 
+from importlib import import_module, util as importlib_util
 from string import Template
+
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger, AstrBotConfig
-try:
-    from .judge_utils import JudgeUtilsMixin
-    from .judge_config import JudgeConfigMixin
-    from .judge_rules import JudgeRulesMixin
-    from .judge_router import JudgeRouterMixin
-    from .judge_stats import JudgeStatsMixin
-    from .judge_commands import JudgeCommandsMixin
-    from .judge_acl import JudgeAclMixin
-    from .judge_budget import JudgeBudgetMixin
-    from .judge_lock import JudgeLockMixin
-    from .judge_context import JudgeContextMixin
-    from .judge_llm import JudgeLlmMixin
-    from .judge_decider import JudgeDeciderMixin
-    from .judge_hooks import JudgeHooksMixin
-except Exception:
-    from judge_utils import JudgeUtilsMixin
-    from judge_config import JudgeConfigMixin
-    from judge_rules import JudgeRulesMixin
-    from judge_router import JudgeRouterMixin
-    from judge_stats import JudgeStatsMixin
-    from judge_commands import JudgeCommandsMixin
-    from judge_acl import JudgeAclMixin
-    from judge_budget import JudgeBudgetMixin
-    from judge_lock import JudgeLockMixin
-    from judge_context import JudgeContextMixin
-    from judge_llm import JudgeLlmMixin
-    from judge_decider import JudgeDeciderMixin
-    from judge_hooks import JudgeHooksMixin
+
+
+def _import_local(module_basename: str):
+    if __package__:
+        qualified = f"{__package__}.{module_basename}"
+        if importlib_util.find_spec(qualified) is not None:
+            return import_module(qualified)
+    return import_module(module_basename)
+
+
+JudgeUtilsMixin = getattr(_import_local("judge_utils"), "JudgeUtilsMixin")
+JudgeConfigMixin = getattr(_import_local("judge_config"), "JudgeConfigMixin")
+JudgeRulesMixin = getattr(_import_local("judge_rules"), "JudgeRulesMixin")
+JudgeRouterMixin = getattr(_import_local("judge_router"), "JudgeRouterMixin")
+JudgeStatsMixin = getattr(_import_local("judge_stats"), "JudgeStatsMixin")
+JudgeCommandsMixin = getattr(_import_local("judge_commands"), "JudgeCommandsMixin")
+JudgeAclMixin = getattr(_import_local("judge_acl"), "JudgeAclMixin")
+JudgeBudgetMixin = getattr(_import_local("judge_budget"), "JudgeBudgetMixin")
+JudgeLockMixin = getattr(_import_local("judge_lock"), "JudgeLockMixin")
+JudgeContextMixin = getattr(_import_local("judge_context"), "JudgeContextMixin")
+JudgeLlmMixin = getattr(_import_local("judge_llm"), "JudgeLlmMixin")
+JudgeDeciderMixin = getattr(_import_local("judge_decider"), "JudgeDeciderMixin")
+JudgeHooksMixin = getattr(_import_local("judge_hooks"), "JudgeHooksMixin")
 
 
 class JudgePlugin(
@@ -104,7 +101,7 @@ $message
         try:
             self._normalize_config()
         except Exception:
-            pass
+            logger.exception("[JudgePlugin] 配置归一化失败，将使用原始配置继续运行")
         
         # 验证配置
         judge_provider = self.config.get("judge_provider_id", "")
@@ -116,6 +113,23 @@ $message
         enable_command_context = self.config.get("enable_command_context", False)
         command_context_max_turns = self.config.get("command_context_max_turns", 10)
         
+        def _warn_pairing(pool_label: str, provider_ids, models, routes_key: str):
+            routes_value = self.config.get(routes_key, None)
+            if isinstance(routes_value, list) and routes_value:
+                logger.info(f"[JudgePlugin] {pool_label} 使用 {routes_key} 配置进行 provider/model 配对")
+            if not isinstance(provider_ids, list) or not isinstance(models, list):
+                return
+            if len(models) < len(provider_ids):
+                logger.warning(
+                    f"[JudgePlugin] {pool_label} 模型名称列表长度小于提供商列表长度，未覆盖的项将使用默认模型"
+                )
+                if not (isinstance(routes_value, list) and routes_value):
+                    logger.warning(f"[JudgePlugin] {pool_label} 建议改用 {routes_key} 以避免索引对齐配置脆弱问题")
+            elif len(models) > len(provider_ids):
+                logger.warning(f"[JudgePlugin] {pool_label} 模型名称列表长度大于提供商列表长度，多余项将被忽略")
+                if not (isinstance(routes_value, list) and routes_value):
+                    logger.warning(f"[JudgePlugin] {pool_label} 建议改用 {routes_key} 以避免索引对齐配置脆弱问题")
+
         if not judge_provider:
             logger.error("[JudgePlugin] 【必填】未配置判断模型提供商ID,插件无法正常工作!")
         if not high_iq_provider_ids:
@@ -123,14 +137,12 @@ $message
         else:
             logger.info(f"[JudgePlugin] 高智商模型提供商列表: {high_iq_provider_ids}")
             logger.info(f"[JudgePlugin] 高智商模型轮询: {'启用' if enable_high_iq_polling else '关闭'}")
-            if isinstance(high_iq_models, list) and len(high_iq_models) < len(high_iq_provider_ids):
-                logger.warning("[JudgePlugin] 高智商模型名称列表长度小于提供商列表长度,未覆盖的项将使用默认模型")
+            _warn_pairing("高智商模型池", high_iq_provider_ids, high_iq_models, "high_iq_routes")
         if not fast_provider_ids:
             logger.warning("[JudgePlugin] 未配置快速模型提供商列表")
         else:
             logger.info(f"[JudgePlugin] 快速模型提供商列表: {fast_provider_ids}")
-            if isinstance(fast_models, list) and len(fast_models) < len(fast_provider_ids):
-                logger.warning("[JudgePlugin] 快速模型名称列表长度小于提供商列表长度,未覆盖的项将使用默认模型")
+            _warn_pairing("快速模型池", fast_provider_ids, fast_models, "fast_routes")
         
         if enable_command_context:
             logger.info(f"[JudgePlugin] 命令模式上下文: 启用 (保留{command_context_max_turns}轮)")
