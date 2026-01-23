@@ -307,6 +307,12 @@
         "default": 3600,
         "hint": "超过该时间锁定自动失效"
     },
+    "session_lock_cleanup_interval_seconds": {
+        "description": "会话锁定清理间隔(秒)",
+        "type": "int",
+        "default": 60,
+        "hint": "清理过期会话锁的最小间隔;设置为 0 表示每次请求都清理(不推荐)"
+    },
     "custom_high_keywords": {
         "description": "自定义高智商关键词(列表)",
         "type": "list",

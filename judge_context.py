@@ -1,8 +1,21 @@
 import json
+import asyncio
 from astrbot.api.event import AstrMessageEvent
 
 
 class JudgeContextMixin:
+    async def _loads_json_maybe_in_executor(self, text: str):
+        try:
+            if isinstance(text, str) and len(text) > 20000:
+                loop = asyncio.get_event_loop()
+                return await loop.run_in_executor(None, json.loads, text)
+        except Exception:
+            return None
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+
     async def _get_command_llm_context(self, event: AstrMessageEvent) -> list:
         if not self.config.get("enable_command_context", False):
             return []
@@ -30,9 +43,8 @@ class JudgeContextMixin:
         if not history_str:
             return []
 
-        try:
-            history = json.loads(history_str)
-        except Exception:
+        history = await self._loads_json_maybe_in_executor(history_str)
+        if history is None:
             return []
 
         if not isinstance(history, list):
@@ -82,10 +94,8 @@ class JudgeContextMixin:
         history_str = getattr(conversation, "history", "") or ""
         history = []
         if history_str:
-            try:
-                history = json.loads(history_str)
-            except Exception:
-                history = []
+            loaded = await self._loads_json_maybe_in_executor(history_str)
+            history = loaded if loaded is not None else []
 
         if not isinstance(history, list):
             history = []
@@ -104,4 +114,3 @@ class JudgeContextMixin:
             await conv_mgr.update_conversation(uid, curr_cid, history=history)
         except Exception:
             return
-

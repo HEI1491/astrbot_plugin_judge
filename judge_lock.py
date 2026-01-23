@@ -2,6 +2,40 @@ from astrbot.api.event import AstrMessageEvent
 
 
 class JudgeLockMixin:
+    def _cleanup_session_locks(self, now_ts: int, ttl_seconds: int, max_scan: int = 500) -> int:
+        if not isinstance(self._session_locks, dict) or not self._session_locks:
+            return 0
+        try:
+            now_ts = int(now_ts)
+        except Exception:
+            now_ts = self._now_ts()
+        try:
+            ttl_seconds = int(ttl_seconds)
+        except Exception:
+            ttl_seconds = 3600
+        if ttl_seconds <= 0:
+            ttl_seconds = 3600
+        expire_before = now_ts - ttl_seconds
+        keys = list(self._session_locks.keys())
+        removed = 0
+        scanned = 0
+        for sk in keys:
+            if scanned >= max_scan:
+                break
+            scanned += 1
+            lock = self._session_locks.get(sk)
+            if not isinstance(lock, dict):
+                self._session_locks.pop(sk, None)
+                removed += 1
+                continue
+            expires_at = lock.get("expires_at", 0) or 0
+            turns = lock.get("turns", 0) or 0
+            created_at = lock.get("created_at", 0) or 0
+            if (expires_at and expires_at < now_ts) or turns <= 0 or (created_at and created_at < expire_before):
+                self._session_locks.pop(sk, None)
+                removed += 1
+        return removed
+
     def _get_lock(self, event: AstrMessageEvent, scope: str):
         if not self.config.get("enable_session_lock", True):
             return None
@@ -83,4 +117,3 @@ class JudgeLockMixin:
         existed = sk in self._session_locks
         self._session_locks.pop(sk, None)
         return existed
-

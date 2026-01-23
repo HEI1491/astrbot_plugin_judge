@@ -1,6 +1,7 @@
 import re
 import json
 import os
+import pkgutil
 
 
 DEFAULT_RULE_KEYWORDS = {
@@ -107,12 +108,21 @@ DEFAULT_RULE_KEYWORDS = {
 def _load_rule_keywords() -> dict:
     base = {k: list(v) for k, v in DEFAULT_RULE_KEYWORDS.items()}
     try:
-        base_dir = os.path.dirname(__file__)
-        path = os.path.join(base_dir, "resources", "judge_keywords.json")
-        if not os.path.isfile(path):
-            return base
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = None
+        pkg = __package__ or __name__
+        raw = pkgutil.get_data(pkg, "resources/judge_keywords.json")
+        if raw:
+            try:
+                data = json.loads(raw.decode("utf-8"))
+            except Exception:
+                data = None
+        if data is None:
+            base_dir = os.path.dirname(__file__)
+            path = os.path.join(base_dir, "resources", "judge_keywords.json")
+            if not os.path.isfile(path):
+                return base
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
         if not isinstance(data, dict):
             return base
         for key, default_value in DEFAULT_RULE_KEYWORDS.items():

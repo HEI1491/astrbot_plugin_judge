@@ -58,6 +58,28 @@ class JudgeHooksMixin:
                 for mid in expired:
                     self._llm_pending.pop(mid, None)
 
+        if self.config.get("enable_session_lock", True):
+            lock_cleanup_interval = self.config.get("session_lock_cleanup_interval_seconds", 60)
+            try:
+                lock_cleanup_interval = int(lock_cleanup_interval)
+            except Exception:
+                lock_cleanup_interval = 60
+            last_lock_cleanup = getattr(self, "_session_lock_last_cleanup_ts", 0) or 0
+            should_cleanup_locks = lock_cleanup_interval <= 0 or (now - last_lock_cleanup) >= lock_cleanup_interval
+            if len(self._session_locks) >= 500:
+                should_cleanup_locks = True
+            if should_cleanup_locks:
+                setattr(self, "_session_lock_last_cleanup_ts", now)
+                ttl = self.config.get("session_lock_ttl_seconds", 3600)
+                try:
+                    ttl = int(ttl)
+                except Exception:
+                    ttl = 3600
+                try:
+                    self._cleanup_session_locks(now, ttl, max_scan=1000)
+                except Exception:
+                    pass
+
         user_message = event.message_str
         if not user_message or len(user_message.strip()) == 0:
             return

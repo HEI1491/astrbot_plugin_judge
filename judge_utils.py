@@ -16,15 +16,14 @@ def _compile_command_regexes(command_patterns: tuple) -> tuple:
 
 class JudgeUtilsMixin:
     def _current_task_id(self) -> int:
-        task = None
-        try:
-            task = asyncio.current_task()
-        except Exception:
-            try:
-                task = asyncio.Task.current_task()
-            except Exception:
-                task = None
-        return id(task) if task else 0
+        get_task = getattr(asyncio, "current_task", None)
+        if callable(get_task):
+            task = get_task()
+        else:
+            task_cls = getattr(asyncio, "Task", None)
+            get_task = getattr(task_cls, "current_task", None) if task_cls else None
+            task = get_task() if callable(get_task) else None
+        return id(task) if task is not None else 0
 
     def _extract_command_args(self, message: str, command_patterns: list) -> str:
         key = tuple(str(p) for p in command_patterns) if isinstance(command_patterns, list) else tuple()
@@ -101,10 +100,7 @@ class JudgeUtilsMixin:
                 pass
 
     def _now_ts(self) -> int:
-        try:
-            return int(time.time())
-        except Exception:
-            return 0
+        return int(time.time())
 
     def _render_bar(self, current: int, total: int, width: int = 10) -> str:
         if total <= 0:

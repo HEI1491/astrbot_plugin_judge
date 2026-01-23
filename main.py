@@ -56,7 +56,7 @@ $message
 最终输出（仅一个词）：HIGH 或 FAST""")
 
 
-class _JudgeComponent(
+class JudgePlugin(
     JudgeCommandsMixin,
     JudgeUtilsMixin,
     JudgeConfigMixin,
@@ -70,23 +70,12 @@ class _JudgeComponent(
     JudgeLlmMixin,
     JudgeDeciderMixin,
     JudgeHooksMixin,
+    Star,
 ):
-    def __init__(self, plugin):
-        object.__setattr__(self, "_plugin", plugin)
-
-    def __getattr__(self, name: str):
-        return getattr(object.__getattribute__(self, "_plugin"), name)
-
-    def __setattr__(self, name: str, value):
-        setattr(object.__getattribute__(self, "_plugin"), name, value)
-
-
-class JudgePlugin(Star):
     """智能LLM判断插件"""
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
-        self._component = _JudgeComponent(self)
         self.config = config
         self._decision_cache = OrderedDict()
         self._answer_cache = OrderedDict()
@@ -105,7 +94,7 @@ class JudgePlugin(Star):
         """插件初始化"""
         logger.info("[JudgePlugin] 智能LLM判断插件正在初始化...")
         try:
-            self._component._normalize_config()
+            self._normalize_config()
         except Exception:
             logger.exception("[JudgePlugin] 配置归一化失败，将使用原始配置继续运行")
         
@@ -164,88 +153,88 @@ class JudgePlugin(Star):
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         """LLM 请求前：按复杂度/策略/预算选择模型提供商与模型"""
-        await self._component.on_llm_request(event, req)
+        await JudgeHooksMixin.on_llm_request(self, event, req)
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, resp):
         """LLM 响应后：统计打点与断路器状态更新"""
-        await self._component.on_llm_response(event, resp)
+        await JudgeHooksMixin.on_llm_response(self, event, resp)
 
     @filter.command("judge_status", alias={"状态", "status"})
     async def judge_status(self, event: AstrMessageEvent, args=None, kwargs=None, rest=None, kwrest=None):
         """查看插件配置与运行状态"""
-        async for item in self._component.judge_status(event):
+        async for item in JudgeCommandsMixin.judge_status(self, event):
             yield item
 
     @filter.command("judge_stats", alias={"统计", "stats"})
     async def judge_stats(self, event: AstrMessageEvent, args=None, kwargs=None, rest=None, kwrest=None):
         """查看路由与 LLM 调用统计面板"""
-        async for item in self._component.judge_stats(event):
+        async for item in JudgeCommandsMixin.judge_stats(self, event):
             yield item
 
     @filter.command("judge_lock", alias={"锁定", "lock", "锁", "锁模型"})
     async def judge_lock(self, event: AstrMessageEvent, args=None, kwargs=None, rest=None, kwrest=None):
         """临时锁定当前会话的模型池/提供商/模型（按轮数自动失效）"""
-        async for item in self._component.judge_lock(event):
+        async for item in JudgeCommandsMixin.judge_lock(self, event):
             yield item
 
     @filter.command("judge_unlock", alias={"解锁", "unlock", "解"})
     async def judge_unlock(self, event: AstrMessageEvent, args=None, kwargs=None, rest=None, kwrest=None):
         """解除当前会话的临时锁定"""
-        async for item in self._component.judge_unlock(event):
+        async for item in JudgeCommandsMixin.judge_unlock(self, event):
             yield item
 
     @filter.command("judge_lock_status", alias={"锁定状态", "lock_status", "锁状态"})
     async def judge_lock_status(self, event: AstrMessageEvent, args=None, kwargs=None, rest=None, kwrest=None):
         """查看当前会话锁定状态（剩余轮数/范围/提供商/模型）"""
-        async for item in self._component.judge_lock_status(event):
+        async for item in JudgeCommandsMixin.judge_lock_status(self, event):
             yield item
 
     @filter.command("judge_test", alias={"判定"})
     async def judge_test(self, event: AstrMessageEvent, args=None, kwargs=None, rest=None, kwrest=None):
         """测试消息复杂度判断（HIGH/FAST + 命中原因）"""
-        async for item in self._component.judge_test(event):
+        async for item in JudgeCommandsMixin.judge_test(self, event):
             yield item
 
     @filter.command("ask_high", alias={"高智商", "deep", "大"})
     async def ask_high_iq(self, event: AstrMessageEvent, args=None, kwargs=None, rest=None, kwrest=None):
         """强制使用高智商模型回答问题（受会话策略限制）"""
-        async for item in self._component.ask_high_iq(event):
+        async for item in JudgeCommandsMixin.ask_high_iq(self, event):
             yield item
 
     @filter.command("ask_fast", alias={"快速", "quick", "小"})
     async def ask_fast(self, event: AstrMessageEvent, args=None, kwargs=None, rest=None, kwrest=None):
         """强制使用快速模型回答问题（受会话策略限制）"""
-        async for item in self._component.ask_fast(event):
+        async for item in JudgeCommandsMixin.ask_fast(self, event):
             yield item
 
     @filter.command("ask_smart", alias={"智能问答", "smart", "问"})
     async def ask_smart(self, event: AstrMessageEvent, args=None, kwargs=None, rest=None, kwrest=None):
         """智能选择模型回答问题（先判定复杂度再路由）"""
-        async for item in self._component.ask_smart(event):
+        async for item in JudgeCommandsMixin.ask_smart(self, event):
             yield item
 
     @filter.command("judge_health", alias={"ping", "health", "测试", "test_llm", "健康"})
     async def judge_health(self, event: AstrMessageEvent, args=None, kwargs=None, rest=None, kwrest=None):
         """查看 LLM 提供商健康度与断路器状态"""
-        async for item in self._component.judge_health(event):
+        async for item in JudgeCommandsMixin.judge_health(self, event):
             yield item
 
     @filter.command("judge_explain", alias={"解释", "explain", "路由解释"})
     async def judge_explain(self, event: AstrMessageEvent, args=None, kwargs=None, rest=None, kwrest=None):
         """解释最近一次路由决策的依据（规则/预算/策略/锁定/断路器）"""
-        async for item in self._component.judge_explain(event):
+        async for item in JudgeCommandsMixin.judge_explain(self, event):
             yield item
 
     @filter.command("judge_rule", alias={"规则", "rule", "路由规则"})
     async def judge_rule(self, event: AstrMessageEvent, args=None, kwargs=None, rest=None, kwrest=None):
         """动态管理自定义判断关键词（add/del/list）"""
-        async for item in self._component.judge_rule(event):
+        async for item in JudgeCommandsMixin.judge_rule(self, event):
             yield item
 
     @filter.command("judge_dryrun", alias={"模拟", "dryrun", "模拟路由"})
     async def judge_dryrun(self, event: AstrMessageEvent, args=None, kwargs=None, rest=None, kwrest=None):
         """模拟路由过程（不消耗 Token）"""
-        async for item in self._component.judge_dryrun(event):
+        async for item in JudgeCommandsMixin.judge_dryrun(self, event):
             yield item
 
