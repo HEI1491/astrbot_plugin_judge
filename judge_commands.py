@@ -10,6 +10,41 @@ INTERNAL_JUDGE_MARKER = "__astrbot_plugin_judge_internal__"
 
 
 class JudgeCommandsMixin:
+    def _command_model_type_and_prompt(self, pool: str) -> tuple:
+        pool = (pool or "").upper()
+        if pool == "HIGH":
+            return ("🧠 高智商模型", "你是一个智能助手,请认真、详细地回答用户的问题。")
+        return ("⚡ 快速模型", "你是一个智能助手,请简洁地回答用户的问题。")
+
+    async def _run_pool_command(
+        self,
+        event: AstrMessageEvent,
+        command_name: str,
+        command_patterns: list,
+        example: str,
+        desired_pool: str,
+        notice: str = "",
+        provider_id: str = "",
+        model_name: str = "",
+        pool: str = "",
+    ):
+        if not self._is_command_allowed(event, command_name):
+            yield event.plain_result("❌ 当前会话无权限使用该指令")
+            return
+
+        question = self._extract_command_args(event.message_str, command_patterns)
+        if not question:
+            yield event.plain_result(example)
+            return
+
+        if not provider_id:
+            pool, policy, lock, provider_id, model_name, _ = self._select_pool_and_provider(event, "cmd", desired_pool)
+        model_type, system_prompt = self._command_model_type_and_prompt(pool or desired_pool)
+        async for result in self._call_model_with_question(
+            event, question, provider_id, model_name, model_type, system_prompt, notice=notice
+        ):
+            yield result
+
     async def judge_status(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_status"):
             yield event.plain_result("❌ 当前会话无权限使用该指令")
@@ -245,9 +280,6 @@ class JudgeCommandsMixin:
             yield event.plain_result(f"测试失败: {e}")
 
     async def ask_high_iq(self, event: AstrMessageEvent):
-        if not self._is_command_allowed(event, "ask_high"):
-            yield event.plain_result("❌ 当前会话无权限使用该指令")
-            return
         policy = self._get_pool_policy(event)
         notice = ""
         if policy == "FAST_ONLY":
@@ -258,31 +290,18 @@ class JudgeCommandsMixin:
             else:
                 yield event.plain_result("❌ 当前会话仅允许使用快速模型")
                 return
-
-        question = self._extract_command_args(event.message_str, ["ask_high", "高智商", "deep", "大"])
-        if not question:
-            yield event.plain_result("请提供问题,例如: /大 帮我分析一下这段代码的时间复杂度")
-            return
-
         desired_pool = "FAST" if policy == "FAST_ONLY" else "HIGH"
-        pool, policy, lock, provider_id, model_name, _ = self._select_pool_and_provider(event, "cmd", desired_pool)
-
-        model_type = "🧠 高智商模型" if pool == "HIGH" else "⚡ 快速模型"
-        system_prompt = (
-            "你是一个智能助手,请认真、详细地回答用户的问题。"
-            if pool == "HIGH"
-            else "你是一个智能助手,请简洁地回答用户的问题。"
-        )
-
-        async for result in self._call_model_with_question(
-            event, question, provider_id, model_name, model_type, system_prompt, notice=notice
+        async for item in self._run_pool_command(
+            event,
+            command_name="ask_high",
+            command_patterns=["ask_high", "高智商", "deep", "大"],
+            example="请提供问题,例如: /大 帮我分析一下这段代码的时间复杂度",
+            desired_pool=desired_pool,
+            notice=notice,
         ):
-            yield result
+            yield item
 
     async def ask_fast(self, event: AstrMessageEvent):
-        if not self._is_command_allowed(event, "ask_fast"):
-            yield event.plain_result("❌ 当前会话无权限使用该指令")
-            return
         policy = self._get_pool_policy(event)
         notice = ""
         if policy == "HIGH_ONLY":
@@ -293,31 +312,18 @@ class JudgeCommandsMixin:
             else:
                 yield event.plain_result("❌ 当前会话仅允许使用高智商模型")
                 return
-
-        question = self._extract_command_args(event.message_str, ["ask_fast", "快速", "quick", "小"])
-        if not question:
-            yield event.plain_result("请提供问题,例如: /小 今天天气怎么样")
-            return
-
         desired_pool = "HIGH" if policy == "HIGH_ONLY" else "FAST"
-        pool, policy, lock, provider_id, model_name, _ = self._select_pool_and_provider(event, "cmd", desired_pool)
-
-        model_type = "🧠 高智商模型" if pool == "HIGH" else "⚡ 快速模型"
-        system_prompt = (
-            "你是一个智能助手,请认真、详细地回答用户的问题。"
-            if pool == "HIGH"
-            else "你是一个智能助手,请简洁地回答用户的问题。"
-        )
-
-        async for result in self._call_model_with_question(
-            event, question, provider_id, model_name, model_type, system_prompt, notice=notice
+        async for item in self._run_pool_command(
+            event,
+            command_name="ask_fast",
+            command_patterns=["ask_fast", "快速", "quick", "小"],
+            example="请提供问题,例如: /小 今天天气怎么样",
+            desired_pool=desired_pool,
+            notice=notice,
         ):
-            yield result
+            yield item
 
     async def ask_smart(self, event: AstrMessageEvent):
-        if not self._is_command_allowed(event, "ask_smart"):
-            yield event.plain_result("❌ 当前会话无权限使用该指令")
-            return
         question = self._extract_command_args(event.message_str, ["ask_smart", "智能问答", "smart", "问"])
         if not question:
             yield event.plain_result("请提供问题,例如: /问 帮我解释一下量子计算")
@@ -333,12 +339,6 @@ class JudgeCommandsMixin:
 
             pool, policy, lock, provider_id, model_name, _ = self._select_pool_and_provider(event, "cmd", desired_pool)
             notice = ""
-            if self.config.get("enable_policy_notice", True):
-                if desired_pool != pool and policy == "FAST_ONLY":
-                    notice = "⚠️ 已按策略限制降级为快速模型"
-                elif desired_pool != pool and policy == "HIGH_ONLY":
-                    notice = "⚠️ 已按策略限制升级为高智商模型"
-
             decision_display = decision
             if decision in ("HIGH", "FAST") and judge_source:
                 tag = judge_source
@@ -354,75 +354,30 @@ class JudgeCommandsMixin:
             if lock:
                 decision_display = f"{decision_display} (锁定)"
 
-            if pool == "HIGH":
-                model_type = "🧠 高智商模型"
-                system_prompt = "你是一个智能助手,请认真、详细地回答用户的问题。"
-            else:
-                model_type = "⚡ 快速模型"
-                system_prompt = "你是一个智能助手,请简洁地回答用户的问题。"
+            model_type, _ = self._command_model_type_and_prompt(pool)
+            policy_notice = ""
+            if self.config.get("enable_policy_notice", True):
+                if desired_pool != pool and policy == "FAST_ONLY":
+                    policy_notice = "⚠️ 已按策略限制降级为快速模型"
+                elif desired_pool != pool and policy == "HIGH_ONLY":
+                    policy_notice = "⚠️ 已按策略限制升级为高智商模型"
+            notice_lines = [f"📊 判断: {decision_display} → {model_type}"]
+            if policy_notice:
+                notice_lines.append(policy_notice)
+            notice = "\n".join(notice_lines)
 
-            if not provider_id:
-                yield event.plain_result(f"❌ {model_type}未配置")
-                return
-
-            provider = self.context.get_provider_by_id(provider_id)
-            if not provider:
-                yield event.plain_result(f"❌ 找不到模型提供商: {provider_id}")
-                return
-
-            logger.info(f"[JudgePlugin] 智能选择 {model_type} (提供商: {provider_id}, 模型: {model_name or '默认'}) 回答问题")
-
-            context_messages = await self._get_command_llm_context(event)
-
-            normalized_q = self._normalize_text(question)
-            if self.config.get("enable_answer_cache", False) and not self.config.get("enable_command_context", False) and normalized_q:
-                cache_key = f"answer:{provider_id}:{model_name}:{self._normalize_text(system_prompt)}:{normalized_q}"
-                cached_answer = self._cache_get(self._answer_cache, cache_key)
-                if isinstance(cached_answer, str) and cached_answer:
-                    await self._append_command_llm_context(event, question, cached_answer)
-                    yield event.plain_result(
-                        f"""{model_type} 智能回答
-━━━━━━━━━━━━━━━━━━━━
-📝 问题: {question[:50]}{"..." if len(question) > 50 else ""}
-📊 判断: {decision_display} → {model_type}
-🤖 提供商: {provider_id}
-📋 模型: {model_name or '默认'}
-━━━━━━━━━━━━━━━━━━━━
-{cached_answer}"""
-                    )
-                    return
-
-            response = await self._provider_text_chat(
-                provider,
-                prompt=question,
-                context_messages=context_messages,
-                system_prompt=system_prompt,
+            async for item in self._run_pool_command(
+                event,
+                command_name="ask_smart",
+                command_patterns=["ask_smart", "智能问答", "smart", "问"],
+                example="请提供问题,例如: /问 帮我解释一下量子计算",
+                desired_pool=pool,
+                notice=notice,
+                provider_id=provider_id,
                 model_name=model_name,
-            )
-
-            answer = response.completion_text
-            if self.config.get("enable_answer_cache", False) and not self.config.get("enable_command_context", False) and normalized_q:
-                cache_key = f"answer:{provider_id}:{model_name}:{self._normalize_text(system_prompt)}:{normalized_q}"
-                self._cache_set(
-                    self._answer_cache,
-                    cache_key,
-                    answer,
-                    self.config.get("answer_cache_ttl_seconds", 300),
-                    self.config.get("answer_cache_max_entries", 200),
-                )
-            await self._append_command_llm_context(event, question, answer)
-
-            yield event.plain_result(
-                f"""{model_type} 智能回答
-━━━━━━━━━━━━━━━━━━━━
-📝 问题: {question[:50]}{"..." if len(question) > 50 else ""}
-📊 判断: {decision_display} → {model_type}
-🤖 提供商: {provider_id}
-📋 模型: {model_name or '默认'}
-━━━━━━━━━━━━━━━━━━━━
-{notice + chr(10) if notice else ""}\
-{answer}"""
-            )
+                pool=pool,
+            ):
+                yield item
 
         except Exception as e:
             logger.error(f"[JudgePlugin] 智能问答调用失败: {e}")

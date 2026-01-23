@@ -97,6 +97,21 @@ class JudgePlugin(
             self._normalize_config()
         except Exception:
             logger.exception("[JudgePlugin] 配置归一化失败，将使用原始配置继续运行")
+
+        try:
+            validate = getattr(self, "_validate_config", None)
+            if callable(validate):
+                errors, warnings = validate()
+                if errors or warnings:
+                    logger.warning(
+                        f"[JudgePlugin] 配置校验摘要: {len(errors)} error / {len(warnings)} warn"
+                    )
+                    for item in errors[:3]:
+                        logger.warning(f"[JudgePlugin] 配置错误: {item}")
+                    for item in warnings[:3]:
+                        logger.warning(f"[JudgePlugin] 配置警告: {item}")
+        except Exception:
+            pass
         
         # 验证配置
         judge_provider = self.config.get("judge_provider_id", "")

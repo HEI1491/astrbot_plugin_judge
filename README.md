@@ -32,6 +32,21 @@
 3) **路由选择**：结合黑白名单、会话锁定、FAST_ONLY/HIGH_ONLY 策略、预算控制与断路器，选择最终 provider/model 并写回到请求。
 4) **统计与解释**：记录最近一次路由元信息，支持 `/judge_stats` 与 `/judge_explain` 查看命中原因与执行情况。
 
+## 🧱 模块职责
+
+代码按 Mixin 拆分，每个文件尽量只负责一类能力（便于维护与扩展）：
+
+- `judge_hooks.py`：LLM 请求/响应钩子，负责路由拦截、pending 关联、断路器更新与统计打点。
+- `judge_decider.py`：复杂度判定（规则预判 → LLM 判定 → fallback）与决策缓存。
+- `judge_router.py`：池选择、策略/锁定覆盖、断路器检查与自动 fallback。
+- `judge_commands.py`：管理与调试命令（status/stats/health/explain/rule/dryrun/ask_*）。
+- `judge_config.py`：配置归一化与校验（只报告 error/warn，不强制改行为）。
+- `judge_acl.py`：黑白名单与命令 ACL。
+- `judge_budget.py`：预算模式与触发比例控制。
+- `judge_lock.py`：会话级临时锁定与过期清理。
+- `judge_context.py`：命令上下文的读取/写回与大历史解析降阻塞。
+- `judge_rules.py`：规则匹配与关键词维护（默认规则可在 `resources/judge_keywords.json` 调整）。
+
 ## 🛠️ 指令列表
 
 插件安装后即可自动生效。以下为指令列表（支持别名）：
