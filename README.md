@@ -44,7 +44,6 @@
 | `/judge_explain` | 解释最近一次路由决策 | `/judge_explain` |
 | `/judge_rule` | 增删列出自定义关键词规则 | `/judge_rule list` |
 | `/judge_dryrun` | 模拟一段消息将如何路由 | `/judge_dryrun 帮我写个代码` |
-| `/judge_reload` | 重载并归一化配置 | `/judge_reload` |
 | `/ask_high` | 强制走高智商池 | `/ask_high` |
 | `/ask_fast` | 强制走快速池 | `/ask_fast` |
 | `/ask_smart` | 智能判定后路由 | `/ask_smart` |
@@ -88,7 +87,7 @@
 > A: 可通过配置 `custom_high_keywords` / `custom_fast_keywords` 或使用 `/judge_rule` 命令动态增删关键词规则；也可直接编辑插件目录下的 `resources/judge_keywords.json` 来调整内置关键词集合。
 
 **Q: 预算耗尽了怎么办？**
-> A: 插件会在预算控制启用时按模式降级为 FAST；可调整预算相关配置后使用 `/judge_reload` 使其生效。
+> A: 插件会在预算控制启用时按模式降级为 FAST；调整预算相关配置后重启插件即可生效。
 
 ---
 

@@ -705,15 +705,3 @@ class JudgeCommandsMixin:
             lines.append("🔌 **断路器**: 原 Provider 熔断, 已自动切换")
 
         yield event.plain_result("\n".join(lines))
-
-    async def judge_reload(self, event: AstrMessageEvent):
-        if not self._is_command_allowed(event, "judge_reload"):
-            yield event.plain_result("❌ 当前会话无权限使用该指令")
-            return
-        
-        try:
-            if hasattr(self, "_normalize_config"):
-                self._normalize_config()
-            yield event.plain_result("✅ 插件配置已重载 (Config Normalized)")
-        except Exception as e:
-            yield event.plain_result(f"❌ 重载失败: {e}")

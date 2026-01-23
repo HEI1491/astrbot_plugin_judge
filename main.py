@@ -249,9 +249,3 @@ class JudgePlugin(Star):
         async for item in self._component.judge_dryrun(event):
             yield item
 
-    @filter.command("judge_reload", alias={"重载", "reload"})
-    async def judge_reload(self, event: AstrMessageEvent, args=None, kwargs=None, rest=None, kwrest=None):
-        """重载配置文件"""
-        async for item in self._component.judge_reload(event):
-            yield item
-
