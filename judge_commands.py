@@ -6,6 +6,9 @@ import datetime
 import time
 
 
+INTERNAL_JUDGE_MARKER = "__astrbot_plugin_judge_internal__"
+
+
 class JudgeCommandsMixin:
     async def judge_status(self, event: AstrMessageEvent):
         if not self._is_command_allowed(event, "judge_status"):
@@ -505,7 +508,7 @@ class JudgeCommandsMixin:
                             provider,
                             prompt="OK",
                             context_messages=[],
-                            system_prompt="Reply OK",
+                            system_prompt=f"{INTERNAL_JUDGE_MARKER} Reply OK",
                             model_name=model,
                         ),
                         timeout=timeout_s,

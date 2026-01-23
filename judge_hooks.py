@@ -65,7 +65,7 @@ class JudgeHooksMixin:
             except Exception:
                 lock_cleanup_interval = 60
             last_lock_cleanup = getattr(self, "_session_lock_last_cleanup_ts", 0) or 0
-            should_cleanup_locks = lock_cleanup_interval <= 0 or (now - last_lock_cleanup) >= lock_cleanup_interval
+            should_cleanup_locks = lock_cleanup_interval > 0 and (now - last_lock_cleanup) >= lock_cleanup_interval
             if len(self._session_locks) >= 500:
                 should_cleanup_locks = True
             if should_cleanup_locks:
@@ -186,8 +186,6 @@ class JudgeHooksMixin:
             task_id = 0
         if task_id and task_id in getattr(self, "_internal_llm_tasks", set()):
             return
-        if not self.config.get("enable_stats", True):
-            return
         msg_obj = getattr(event, "message_obj", None)
         msg_id = getattr(msg_obj, "message_id", "") if msg_obj else ""
         if not msg_id:
@@ -205,6 +203,8 @@ class JudgeHooksMixin:
             self._update_circuit_breaker(str(pending.get("provider_id") or ""), str(pending.get("model") or ""), ok)
         except Exception:
             pass
+        if not self.config.get("enable_stats", True):
+            return
         if ok:
             self._stats_inc("llm_ok")
         else:
