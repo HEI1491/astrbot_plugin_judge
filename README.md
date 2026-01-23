@@ -93,4 +93,6 @@
 
 <div align="center">
 Made with ❤️ for AstrBot
+
+喜欢点个star吧~
 </div>
