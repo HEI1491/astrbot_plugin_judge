@@ -23,6 +23,15 @@ class JudgeCommandsMixin:
         budget_mode = c.get("budget_mode", "BALANCED")
         high_iq_ratio = self._get_high_iq_ratio(budget_mode)
 
+        errors = []
+        warnings = []
+        try:
+            validate = getattr(self, "_validate_config", None)
+            if callable(validate):
+                errors, warnings = validate()
+        except Exception:
+            errors, warnings = [], []
+
         lines = [
             "🧩 **Judge 插件状态**",
             "━━━━━━━━━━━━━━━━━━━━━━━━",
@@ -46,10 +55,29 @@ class JudgeCommandsMixin:
             f"├─ High: {len(c.get('high_iq_provider_ids', []))} 个提供商",
             f"└─ Fast: {len(c.get('fast_provider_ids', []))} 个提供商",
             "",
+            "🧪 **配置校验**",
+            f"├─ Error: `{len(errors)}`",
+            f"└─ Warn : `{len(warnings)}`",
+            "",
             "🛡️ **策略与限制**",
             f"├─ 路由黑白名单: {len(c.get('router_whitelist', []))} / {len(c.get('router_blacklist', []))}",
             f"└─ 仅快/仅高策略: {len(c.get('fast_only_list', []))} / {len(c.get('high_only_list', []))}",
         ]
+
+        if errors:
+            lines.append("")
+            lines.append("❌ **Error 详情(Top 3)**:")
+            for item in errors[:3]:
+                lines.append(f"  • {item}")
+            if len(errors) > 3:
+                lines.append("  • ...")
+        if warnings:
+            lines.append("")
+            lines.append("⚠️ **Warn 详情(Top 3)**:")
+            for item in warnings[:3]:
+                lines.append(f"  • {item}")
+            if len(warnings) > 3:
+                lines.append("  • ...")
 
         yield event.plain_result("\n".join(lines))
 

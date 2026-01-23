@@ -1,3 +1,6 @@
+import json
+
+
 class JudgeConfigMixin:
     def _normalize_list(self, value, keep_empty: bool = False) -> list:
         if not isinstance(value, list):
@@ -67,3 +70,117 @@ class JudgeConfigMixin:
         self.config["high_only_list"] = self._normalize_list(self.config.get("high_only_list", []))
         self.config["custom_high_keywords"] = self._normalize_list(self.config.get("custom_high_keywords", []))
         self.config["custom_fast_keywords"] = self._normalize_list(self.config.get("custom_fast_keywords", []))
+
+    def _validate_config(self) -> tuple:
+        errors = []
+        warnings = []
+        c = self.config
+
+        judge_provider_id = str(c.get("judge_provider_id", "") or "").strip()
+        if not judge_provider_id:
+            errors.append("缺少必填项 judge_provider_id（用于复杂度判定）")
+
+        def _as_list(value):
+            return value if isinstance(value, list) else None
+
+        def _check_routes(routes_key: str, provider_key: str, model_key: str, pool_name: str):
+            routes = _as_list(c.get(routes_key, None))
+            if routes is not None and routes:
+                bad = 0
+                for item in routes:
+                    if isinstance(item, str):
+                        s = item.strip()
+                        if not s:
+                            bad += 1
+                            continue
+                        if ":" in s:
+                            pid = s.split(":", 1)[0].strip()
+                            if not pid:
+                                bad += 1
+                        else:
+                            if not s:
+                                bad += 1
+                    elif isinstance(item, dict):
+                        pid = str(item.get("provider_id") or item.get("provider") or "").strip()
+                        if not pid:
+                            bad += 1
+                    elif isinstance(item, (list, tuple)):
+                        pid = str(item[0]).strip() if len(item) >= 1 else ""
+                        if not pid:
+                            bad += 1
+                    else:
+                        bad += 1
+                if bad:
+                    warnings.append(f"{pool_name} 的 {routes_key} 存在 {bad} 条无效项（将被忽略）")
+                return
+
+            provider_ids = _as_list(c.get(provider_key, None))
+            model_names = _as_list(c.get(model_key, None))
+            if provider_ids is None:
+                errors.append(f"{pool_name} 的 {provider_key} 不是列表")
+                return
+            if not provider_ids:
+                warnings.append(f"{pool_name} 未配置提供商（{provider_key} 为空）")
+                return
+            if model_names is None:
+                warnings.append(f"{pool_name} 的 {model_key} 不是列表（将按默认模型处理）")
+                return
+            if len(model_names) < len(provider_ids):
+                warnings.append(f"{pool_name} 的 {model_key} 长度小于 {provider_key}（未覆盖项将用默认模型）")
+            elif len(model_names) > len(provider_ids):
+                warnings.append(f"{pool_name} 的 {model_key} 长度大于 {provider_key}（多余项将被忽略）")
+
+        _check_routes("high_iq_routes", "high_iq_provider_ids", "high_iq_models", "高智商模型池")
+        _check_routes("fast_routes", "fast_provider_ids", "fast_models", "快速模型池")
+
+        def _check_json_text(key: str):
+            raw = c.get(key, "")
+            if raw is None or raw == "":
+                return
+            if not isinstance(raw, str):
+                warnings.append(f"{key} 不是字符串（将视为未配置）")
+                return
+            try:
+                json.loads(raw)
+            except Exception:
+                warnings.append(f"{key} 不是合法 JSON（将按未配置处理）")
+
+        _check_json_text("command_acl_json")
+        _check_json_text("budget_overrides_json")
+
+        def _check_int_range(key: str, min_v=None, max_v=None):
+            if key not in c:
+                return
+            try:
+                v = int(c.get(key))
+            except Exception:
+                warnings.append(f"{key} 不是整数")
+                return
+            if min_v is not None and v < min_v:
+                warnings.append(f"{key} 小于 {min_v}")
+            if max_v is not None and v > max_v:
+                warnings.append(f"{key} 大于 {max_v}")
+
+        def _check_float_positive(key: str):
+            if key not in c:
+                return
+            try:
+                v = float(c.get(key))
+            except Exception:
+                warnings.append(f"{key} 不是数字")
+                return
+            if v <= 0:
+                warnings.append(f"{key} 应大于 0")
+
+        _check_int_range("economy_high_iq_ratio", 0, 100)
+        _check_int_range("balanced_high_iq_ratio", 0, 100)
+        _check_int_range("flagship_high_iq_ratio", 0, 100)
+        _check_int_range("decision_cache_ttl_seconds", 0, None)
+        _check_int_range("decision_cache_max_entries", 0, None)
+        _check_int_range("answer_cache_ttl_seconds", 0, None)
+        _check_int_range("answer_cache_max_entries", 0, None)
+        _check_int_range("llm_pending_ttl_seconds", 0, None)
+        _check_int_range("llm_pending_cleanup_interval_seconds", 0, None)
+        _check_float_positive("health_check_timeout_seconds")
+
+        return errors, warnings
