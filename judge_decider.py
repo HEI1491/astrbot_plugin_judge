@@ -2,6 +2,10 @@ from string import Template
 from astrbot.api import logger
 
 
+INTERNAL_JUDGE_MARKER = "__astrbot_plugin_judge_internal__"
+DEFAULT_JUDGE_SYSTEM_PROMPT = "你是一个消息复杂度判断助手。只输出 HIGH 或 FAST，不要输出任何解释、标点、空格或换行。"
+
+
 class JudgeDeciderMixin:
     async def _judge_message_complexity_with_meta(self, message: str) -> tuple:
         normalized = self._normalize_text(message)
@@ -45,13 +49,30 @@ class JudgeDeciderMixin:
         judge_model = self.config.get("judge_model", "")
 
         try:
+            base_system_prompt = str(self.config.get("judge_system_prompt", "") or "").strip() or DEFAULT_JUDGE_SYSTEM_PROMPT
+            system_prompt = f"{INTERNAL_JUDGE_MARKER} {base_system_prompt}"
+            task_id = 0
+            try:
+                task_id = int(self._current_task_id() or 0)
+            except Exception:
+                task_id = 0
+            if task_id:
+                try:
+                    self._internal_llm_tasks.add(task_id)
+                except Exception:
+                    pass
             response = await self._provider_text_chat(
                 provider,
                 prompt=prompt,
                 context_messages=[],
-                system_prompt="你是一个消息复杂度判断助手。只输出 HIGH 或 FAST，不要输出任何解释、标点、空格或换行。",
+                system_prompt=system_prompt,
                 model_name=judge_model,
             )
+            if task_id:
+                try:
+                    self._internal_llm_tasks.discard(task_id)
+                except Exception:
+                    pass
 
             result_text = response.completion_text.strip().upper()
             if "HIGH" in result_text:
@@ -74,6 +95,15 @@ class JudgeDeciderMixin:
             return (decision, "llm", "")
 
         except Exception as e:
+            try:
+                task_id = int(self._current_task_id() or 0)
+            except Exception:
+                task_id = 0
+            if task_id:
+                try:
+                    self._internal_llm_tasks.discard(task_id)
+                except Exception:
+                    pass
             logger.warning(f"[JudgePlugin] judge 模型调用失败, fallback: {e}")
             decision = self._simple_rule_judge(message)
             if self.config.get("enable_decision_cache", True) and normalized:
@@ -89,4 +119,3 @@ class JudgeDeciderMixin:
     async def _judge_message_complexity(self, message: str) -> str:
         decision, _, _ = await self._judge_message_complexity_with_meta(message)
         return decision
-

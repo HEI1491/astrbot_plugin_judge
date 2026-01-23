@@ -29,10 +29,17 @@ class JudgeAclMixin:
         raw = self.config.get("command_acl_json", "")
         if not raw:
             return ([], [])
-        try:
-            data = json.loads(raw)
-        except Exception:
-            return ([], [])
+        cached_raw = getattr(self, "_command_acl_raw", None)
+        cached_data = getattr(self, "_command_acl_data", None)
+        if cached_raw == raw and isinstance(cached_data, dict):
+            data = cached_data
+        else:
+            try:
+                data = json.loads(raw)
+            except Exception:
+                data = {}
+            setattr(self, "_command_acl_raw", raw)
+            setattr(self, "_command_acl_data", data)
         if not isinstance(data, dict):
             return ([], [])
         item = data.get(command_name) or data.get("*")
@@ -66,4 +73,3 @@ class JudgeAclMixin:
         if isinstance(high_only, list) and any(k in high_only for k in keys):
             return "HIGH_ONLY"
         return ""
-

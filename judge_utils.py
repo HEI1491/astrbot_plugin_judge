@@ -1,5 +1,6 @@
 import re
 import time
+import asyncio
 from collections import OrderedDict
 from functools import lru_cache
 from astrbot.api.event import AstrMessageEvent
@@ -14,6 +15,17 @@ def _compile_command_regexes(command_patterns: tuple) -> tuple:
 
 
 class JudgeUtilsMixin:
+    def _current_task_id(self) -> int:
+        task = None
+        try:
+            task = asyncio.current_task()
+        except Exception:
+            try:
+                task = asyncio.Task.current_task()
+            except Exception:
+                task = None
+        return id(task) if task else 0
+
     def _extract_command_args(self, message: str, command_patterns: list) -> str:
         key = tuple(str(p) for p in command_patterns) if isinstance(command_patterns, list) else tuple()
         for regex in _compile_command_regexes(key):

@@ -23,6 +23,15 @@
 - **📝 上下文感知**：支持携带聊天记录进行判断，理解更精准。
 - **⚡ 高效缓存**：自动缓存相似问题的判断结果，减少重复开销。
 
+## 🧩 工作原理
+
+插件在每次 LLM 调用前拦截请求，根据“复杂度判定”决定走 HIGH 池或 FAST 池，并可叠加策略与保护机制：
+
+1) **规则预判**：先用关键词/正则快速判定（可编辑 `resources/judge_keywords.json`，也支持 `custom_*_keywords`）。
+2) **模型判定**：若规则无法判定，则调用 `judge_provider_id` 对消息二分类（仅输出 HIGH/FAST）。
+3) **路由选择**：结合黑白名单、会话锁定、FAST_ONLY/HIGH_ONLY 策略、预算控制与断路器，选择最终 provider/model 并写回到请求。
+4) **统计与解释**：记录最近一次路由元信息，支持 `/judge_stats` 与 `/judge_explain` 查看命中原因与执行情况。
+
 ## 🛠️ 指令列表
 
 插件安装后即可自动生效。以下为指令列表（支持别名）：
@@ -76,7 +85,7 @@
 > A: 请先用 `/judge_status` 查看状态，并检查 `judge_provider_id` 是否已配置。
 
 **Q: 如何自定义判断逻辑？**
-> A: 可通过配置 `custom_high_keywords` / `custom_fast_keywords` 或使用 `/judge_rule` 命令动态增删关键词规则。
+> A: 可通过配置 `custom_high_keywords` / `custom_fast_keywords` 或使用 `/judge_rule` 命令动态增删关键词规则；也可直接编辑插件目录下的 `resources/judge_keywords.json` 来调整内置关键词集合。
 
 **Q: 预算耗尽了怎么办？**
 > A: 插件会在预算控制启用时按模式降级为 FAST；可调整预算相关配置后使用 `/judge_reload` 使其生效。

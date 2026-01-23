@@ -4,10 +4,30 @@ from astrbot.api import logger
 import time
 
 
+INTERNAL_JUDGE_MARKER = "__astrbot_plugin_judge_internal__"
+
+
 class JudgeHooksMixin:
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         if not self.config.get("enable", True):
             return
+
+        try:
+            task_id = int(self._current_task_id() or 0)
+        except Exception:
+            task_id = 0
+        if task_id and task_id in getattr(self, "_internal_llm_tasks", set()):
+            return
+        try:
+            system_prompt = getattr(req, "system_prompt", "") or ""
+            prompt = getattr(req, "prompt", "") or ""
+            if (
+                (isinstance(system_prompt, str) and INTERNAL_JUDGE_MARKER in system_prompt)
+                or (isinstance(prompt, str) and INTERNAL_JUDGE_MARKER in prompt)
+            ):
+                return
+        except Exception:
+            pass
 
         now = self._now_ts()
         pending_ttl_seconds = self.config.get("llm_pending_ttl_seconds", 300)
@@ -137,6 +157,12 @@ class JudgeHooksMixin:
 
     async def on_llm_response(self, event: AstrMessageEvent, resp):
         if not self.config.get("enable", True):
+            return
+        try:
+            task_id = int(self._current_task_id() or 0)
+        except Exception:
+            task_id = 0
+        if task_id and task_id in getattr(self, "_internal_llm_tasks", set()):
             return
         if not self.config.get("enable_stats", True):
             return

@@ -321,6 +321,12 @@
         "default": [],
         "hint": "列表中的词出现即判为 FAST(优先级高于内置规则与高智商关键词),例如: ['不需要代码','只是问问']"
     },
+    "judge_system_prompt": {
+        "description": "判断模型 System Prompt",
+        "type": "text",
+        "default": "",
+        "hint": "用于 judge 模型调用的 system_prompt。留空使用内置默认值"
+    },
     "simple_keywords_add": {
         "description": "追加内置 FAST 关键词(列表)",
         "type": "list",
